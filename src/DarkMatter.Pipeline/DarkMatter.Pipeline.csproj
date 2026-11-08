@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The index pipeline: fetches releases, extracts archives, builds the allowlist. Kept apart
+       from the analyzer (src/DarkMatter), which never touches the network or writes untrusted
+       files; neither project references the other. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>darkmatter-pipeline</AssemblyName>
+    <RootNamespace>DarkMatter.Pipeline</RootNamespace>
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+</Project>

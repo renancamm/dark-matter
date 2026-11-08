@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>ToolHelper</AssemblyName>
+  </PropertyGroup>
+</Project>

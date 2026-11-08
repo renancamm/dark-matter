@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- One assembly per payload: dotnet build -p:Payload=pe (pe, zip, costura, linked, text). Each embeds
+       one manifest resource; the code is the same harmless class. -->
+  <PropertyGroup>
+    <Payload Condition="'$(Payload)' == ''">text</Payload>
+    <AssemblyName>Embedded.$(Payload)</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="E.cs" />
+    <!-- A harmless text resource: stays Known access. -->
+    <EmbeddedResource Include="payload/readme.txt" LogicalName="Embedded.readme.txt" Condition="'$(Payload)' == 'text'" />
+    <!-- A managed library from the SDK, under a data-like name: found by its PE header. -->
+    <EmbeddedResource Include="$(MSBuildBinPath)/Microsoft.Build.Framework.dll" LogicalName="Embedded.data.bin" Condition="'$(Payload)' == 'pe'" />
+    <!-- Costura.Fody's naming for a deflate-compressed bundled assembly (no magic number). -->
+    <EmbeddedResource Include="payload/readme.txt" LogicalName="costura.helper.dll.compressed" Condition="'$(Payload)' == 'costura'" />
+    <!-- A linked resource: the bytes stay in a separate file, which the check does not read. -->
+    <LinkResource Include="payload/readme.txt" Condition="'$(Payload)' == 'linked'" />
+  </ItemGroup>
+  <!-- A zip archive made at build time from payload/, embedded under a data-like name. -->
+  <Target Name="ZipPayload" BeforeTargets="PrepareForBuild" Condition="'$(Payload)' == 'zip'">
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <ZipDirectory SourceDirectory="$(MSBuildProjectDirectory)/payload" DestinationFile="$(IntermediateOutputPath)payload.zip" Overwrite="true" />
+    <ItemGroup>
+      <EmbeddedResource Include="$(IntermediateOutputPath)payload.zip" LogicalName="Embedded.assets.pack" />
+    </ItemGroup>
+  </Target>
+</Project>

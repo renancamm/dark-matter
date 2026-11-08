@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>FailOpenFixture</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- corrupt/ is a separate tool project -->
+    <Compile Remove="corrupt/**" />
+  </ItemGroup>
+</Project>

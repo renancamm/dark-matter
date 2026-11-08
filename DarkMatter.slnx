@@ -1,0 +1,32 @@
+<Solution>
+  <Folder Name="/fixtures/">
+    <Project Path="fixtures/classification/safe/classification-safe.csproj" />
+    <Project Path="fixtures/classification/unclassified/classification-unclassified.csproj" />
+    <Project Path="fixtures/fail-open/corrupt/fail-open-corrupt.csproj" />
+    <Project Path="fixtures/download/download.csproj" />
+    <Project Path="fixtures/embedded/embedded.csproj" />
+    <Project Path="fixtures/evasion/evasion.csproj" />
+    <Project Path="fixtures/fail-open/fail-open.csproj" />
+    <Project Path="fixtures/file-access/file-access.csproj" />
+    <Project Path="fixtures/game-api/mod/game-api-mod.csproj" />
+    <Project Path="fixtures/game-api/mod-exempt/game-api-mod-exempt.csproj" />
+    <Project Path="fixtures/game-api/mod-full/game-api-mod-full.csproj" />
+    <Project Path="fixtures/game-api/stub/game-api-stub.csproj" />
+    <Project Path="fixtures/harmony-patch/mod/harmony-patch-mod.csproj" />
+    <Project Path="fixtures/harmony-patch/stub/harmony-patch-stub.csproj" />
+    <Project Path="fixtures/impersonation/impersonation.csproj" />
+    <Project Path="fixtures/labels/labels.csproj" />
+    <Project Path="fixtures/library-propagation/lib/library-propagation-lib.csproj" />
+    <Project Path="fixtures/library-propagation/mod/library-propagation-mod.csproj" />
+    <Project Path="fixtures/library-propagation/mod-exempt/library-propagation-mod-exempt.csproj" />
+    <Project Path="fixtures/library-propagation/mod-full/library-propagation-mod-full.csproj" />
+    <Project Path="fixtures/library-propagation/tools/library-propagation-tools.csproj" />
+    <Project Path="fixtures/raw-memory/safe/raw-memory-safe.csproj" />
+    <Project Path="fixtures/raw-memory/unsafe/raw-memory-unsafe.csproj" />
+    <Project Path="fixtures/reflection/reflection.csproj" />
+    <Project Path="fixtures/shell-open/link/shell-open-link.csproj" />
+    <Project Path="fixtures/shell-open/program/shell-open-program.csproj" />
+  </Folder>
+  <Project Path="src/DarkMatter/DarkMatter.csproj" />
+  <Project Path="src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj" />
+</Solution>

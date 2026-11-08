@@ -1,0 +1,35 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,jsonc,csproj,props,slnx,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_new_line_before_open_brace = none
+csharp_new_line_before_else = false
+csharp_new_line_before_catch = false
+csharp_new_line_before_finally = false
+csharp_new_line_before_members_in_object_initializers = true
+csharp_indent_case_contents_when_block = false
+csharp_preserve_single_line_statements = true
+csharp_preserve_single_line_blocks = true
+csharp_style_var_for_built_in_types = true:silent
+csharp_style_var_when_type_is_apparent = true:silent
+csharp_style_var_elsewhere = true:silent
+dotnet_sort_system_directives_first = true
+
+# unused usings; file-scoped namespaces; formatting
+dotnet_diagnostic.IDE0005.severity = warning
+dotnet_diagnostic.IDE0161.severity = warning
+dotnet_diagnostic.IDE0055.severity = warning

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- One assembly per case: dotnet build -p:Case=TranspilerOperand. Ordinary game interaction that
+       policy 11 no longer counts as Full access (benign controls), and the real APIs that still are.
+       References the Harmony stand-in (0Harmony) and the game stand-in (KSA), like a mod built
+       against the real ones; a case that uses neither does not reference them in its metadata. -->
+  <PropertyGroup>
+    <Case Condition="'$(Case)' == ''">TranspilerOperand</Case>
+    <AssemblyName>GameInteraction.$(Case)</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="cases/$(Case).cs" />
+    <ProjectReference Include="../harmony-patch/stub/harmony-patch-stub.csproj" />
+    <ProjectReference Include="../game-api/stub/game-api-stub.csproj" />
+  </ItemGroup>
+</Project>

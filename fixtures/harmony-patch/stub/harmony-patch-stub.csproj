@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A stand-in for Harmony under its real assembly name, so the cases reference attributes in
+       another assembly the way mods do. The tests allowlist and profile it. -->
+  <PropertyGroup>
+    <AssemblyName>0Harmony</AssemblyName>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- One assembly per case: dotnet build -p:Case=GameTarget. References the Harmony stand-in
+       (0Harmony) and the game stand-in (KSA), like a mod built against the real ones. -->
+  <PropertyGroup>
+    <Case Condition="'$(Case)' == ''">GameTarget</Case>
+    <AssemblyName>HarmonyPatch.$(Case)</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="cases/$(Case).cs" />
+    <ProjectReference Include="../stub/harmony-patch-stub.csproj" />
+    <ProjectReference Include="../../game-api/stub/game-api-stub.csproj" />
+  </ItemGroup>
+</Project>

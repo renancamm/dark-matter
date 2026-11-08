@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>FileAccessFixture</AssemblyName>
+  </PropertyGroup>
+</Project>

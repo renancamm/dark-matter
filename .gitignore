@@ -1,0 +1,38 @@
+# build output
+bin/
+obj/
+out/
+*.user
+
+# pipeline inputs and outputs (fetched or generated; never committed)
+listings/
+downloads/
+extracted/
+*.zip
+*.7z
+manifest*.json
+results*.json
+facts*.json
+
+# allowlists are generated per run
+*allowlist*.json
+
+# derived game material: never commit (names and tags derived from proprietary assemblies)
+game-api-profile.json
+game-profile*.json
+ksa-archive-cache/
+
+# trusted-library files and their profiles (generated per run from the allowlist)
+libraries/
+library-profiles*.json
+
+# local tooling
+.claude/
+.claude-docs/
+.vscode/
+.idea/
+__pycache__/
+.DS_Store
+
+# local agent notes
+CLAUDE.md
