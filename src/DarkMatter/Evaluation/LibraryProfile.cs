@@ -39,9 +39,9 @@ internal sealed record LibraryProfile(
         foreach (var (f, name) in files) { own.Add(f.Name); own.Add(name); }
         // Reflection reaches what the types it resolves can do, by where they live; calls between
         // the libraries profiled together are followed, so they are this set's own types.
-        var access = new TypeAccess(policy, boundary, own, set.SelectMany(a => a.Types.Keys).ToHashSet(StringComparer.Ordinal), TrustedLibraries.None, gameApi, gameTypes);
+        var access = new TypeAccess(policy, boundary, own, set.SelectMany(a => a.Types.Keys).ToHashSet(StringComparer.Ordinal), TrustedLibraries.None, gameApi, gameTypes, set);
         var provenance = new FieldProvenance(set, methods, access);
-        var seeds = Reach.CapabilitySeeds(set, policy, fieldsWritten: provenance.FieldsWritten);
+        var seeds = Reach.CapabilitySeeds(set, policy, fieldsWritten: provenance.FieldsWritten, reflected: provenance.ReachedByReflection);
         void Seed(MethodFacts m, string cap, string detail) {
             var s = Reach.Of(seeds, m.Key);
             if (policy.FileKinds.TryGetValue(cap, out var kind))
@@ -51,7 +51,7 @@ internal sealed record LibraryProfile(
         }
         foreach (var m in methods)
             foreach (var r in m.ReflectedTypes)
-                foreach (var (cap, detail) in access.Reach(r.Type, r.Assembly, provenance.Members(r.Members, r.NameNode, r.Lookup), r.PatchTarget ? TypeAccess.PatchUse(r.Patch) : TypeUse.Reflection, frameworkCaps: false, r.Detail))
+                foreach (var (cap, detail) in access.Reach(r.Type, r.Assembly, provenance.Members(r.Members, r.NameNode, r.Lookup), r.PatchTarget ? TypeAccess.PatchUse(r.Patch) : TypeUse.Reflection, frameworkCaps: false, r.Detail, r.NullTestOnly, r.Derived))
                     Seed(m, cap, detail);
         var pointerFields = set.SelectMany(a => a.PointerFields).ToHashSet(StringComparer.Ordinal);
         // A transpiler that rewrites anything but the game's code is Full access, as for a mod (see
@@ -72,8 +72,8 @@ internal sealed record LibraryProfile(
 
         foreach (var a in set) {
             // Assembly-level findings apply to every member: native or precompiled code means the
-            // IL read may not be what runs. Raw-memory markers (unsafe code enabled, pointer
-            // fields) are covered per method instead: pointer locals, signatures and stores are
+            // IL read may not be what runs. Raw-memory markers (pointer fields; the unsafe compile
+            // flag is informational) are covered per method instead: pointer locals, signatures and stores are
             // checked in each method, and pointer fields where they are used, below.
             var whole = a.Caps.Where(e => e.Cap != "raw-memory" && !policy.Informational.Contains(e.Cap)).ToList();
             // An assembly referenced only through types can still run code; which member leads
@@ -85,6 +85,7 @@ internal sealed record LibraryProfile(
                 foreach (var n in unanalyzedRefs) s.TryAdd("unanalyzed-call", $"{a.Name} references {n}");
                 foreach (var d in m.UnresolvedReflection) s.TryAdd("unresolved-reflection", d);
                 foreach (var b in m.BoundedReflection) s.TryAdd(access.Bounded(b.Type, b.Assembly) ? "bounded-reflection" : "unresolved-reflection", b.Detail);
+                foreach (var (t, d) in m.TypedByName.Where(x => !access.IsGame(x.Type, null, derived: false))) s.TryAdd("unresolved-reflection", d);
                 foreach (var d in m.ComActivation) s.TryAdd("com-activation", d);
                 if (m.DecodeFailed) s.TryAdd("decode-failure", m.Name);
                 foreach (var f in m.FieldLoads.Concat(m.FieldStores).Where(pointerFields.Contains))
@@ -97,6 +98,9 @@ internal sealed record LibraryProfile(
                             break;
                         case AssemblyKind.Framework when !r.Classified:
                             s.TryAdd("unclassified-reference", $"{r.Member}  <-  {m.Name}");
+                            break;
+                        case AssemblyKind.Game:
+                            foreach (var (cap, detail) in Evaluator.GameReference(r, m.Name, policy, boundary, gameApi)) Seed(m, cap, detail);
                             break;
                     }
                 }
@@ -155,13 +159,70 @@ internal sealed record LibraryProfile(
             if (Members.TryGetValue(t + "::" + name, out var caps)) return caps;
             if (!Types.TryGetValue(t, out var supers)) {
                 // The root types every class and struct derive from add no members a call could
-                // reach by naming this type that would not name them directly.
+                // reach by naming this type that would not name them directly. (By name: a profile's
+                // type table has no assemblies. A trusted file is its author's published build, verified
+                // by hash, so no mod can make one derive from a type only named like a root type; G4.)
                 if (seen.Count > 1 && t is not ("System.Object" or "System.ValueType" or "System.Enum")) outside = true;
                 continue;
             }
             foreach (var s in supers) todo.Enqueue(s);
         }
         return null;
+    }
+
+    /// <summary>
+    /// What reflection that looks up <paramref name="reached"/> on <paramref name="type"/> reaches in this
+    /// file: every member of the type, of its base types in the file and of the types nested in any of
+    /// them (the walker counts a nested type found by GetNestedType(s) or GetMember as the type it was
+    /// found from, as for the game-API map), whose name the lookup can find
+    /// (<see cref="ReflectionApis.MemberMatches"/>), their names added to <paramref name="names"/>
+    /// (a nested type's as "/Inner", see <see cref="ReflectionApis.NestedPrefix"/>). Null when there is none; then
+    /// <paramref name="outside"/> says whether one could be inherited from a type outside the file (as in
+    /// <see cref="Find"/>). <paramref name="outsideCode"/> says whether one of those types has a base type
+    /// (not an interface) outside the file that is not a framework type (as <see cref="TrustedLibraries.LookupType"/>
+    /// counts them): a lookup by name searches the base types, so their members of that name are reached
+    /// too, whether or not one was found in the file (H3 review).
+    /// </summary>
+    public Reach.Caps? FindMatching(string type, string reached, List<string> names, out bool outside, out bool outsideCode) {
+        outside = false;
+        outsideCode = false;
+        Reach.Caps? union = null;
+        // A type's first super is its base type (a class's; an interface's first interface, counted as
+        // one too); the rest are interfaces, whose members a lookup on a class or on another interface
+        // does not find, so code outside the file reached only through them is not counted (outsideCode).
+        var seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var todo = new Queue<(string Type, bool Base)>([(type, true)]);
+        while (todo.Count > 0) {
+            var (t, viaBase) = todo.Dequeue();
+            bool first = !seen.TryGetValue(t, out var before);
+            if (!first && (before || !viaBase)) continue;
+            seen[t] = viaBase || before;
+            if (first) {
+                var prefix = t + "::";
+                foreach (var (member, caps) in Members) {
+                    if (!member.StartsWith(prefix, StringComparison.Ordinal) || !ReflectionApis.MemberMatches(reached, member[prefix.Length..])) continue;
+                    union ??= [];
+                    // A nested type's member as that nested type ("/Inner", as ReflectionApis.NestedPrefix).
+                    names.Add(t.StartsWith(type + "/", StringComparison.Ordinal) ? ReflectionApis.NestedPrefix + t[(type.Length + 1)..] : member[prefix.Length..]);
+                    foreach (var (cap, d) in caps) union.TryAdd(cap, d);
+                }
+            }
+            if (!Types.TryGetValue(t, out var supers)) {
+                // As in Find: the root types add nothing; any other type outside the file can.
+                if (t != type && t is not ("System.Object" or "System.ValueType" or "System.Enum")) {
+                    outside = true;
+                    if (viaBase && !t.StartsWith("System.", StringComparison.Ordinal)) outsideCode = true;
+                }
+                continue;
+            }
+            for (int i = 0; i < supers.Count; i++) todo.Enqueue((supers[i], viaBase && i == 0));
+            // The types nested in it (one level; theirs in turn when they are visited), each searched with
+            // its own base types.
+            if (first)
+                foreach (var n in Types.Keys)
+                    if (n.Length > t.Length + 1 && n.StartsWith(t + "/", StringComparison.Ordinal) && n.IndexOf('/', t.Length + 1) < 0) todo.Enqueue((n, true));
+        }
+        return union;
     }
 }
 
@@ -173,6 +234,8 @@ internal sealed record LibraryProfile(
 internal sealed class TrustedLibraries(IReadOnlyDictionary<string, IReadOnlyList<string>> hashesByName, IReadOnlyDictionary<string, LibraryProfile> profiles) {
     /// <summary>Why <see cref="Lookup"/> found nothing when no profiled version has the member.</summary>
     public const string NoSuchMember = "no profiled trusted version has this member";
+    /// <summary>Why <see cref="LookupType"/> found nothing when no profiled version has the type.</summary>
+    public const string NoSuchType = "no profiled trusted version has this type";
 
     /// <summary>No trusted library (for a library profile, which profiles them together).</summary>
     public static TrustedLibraries None { get; } = new(new Dictionary<string, IReadOnlyList<string>>(), new Dictionary<string, LibraryProfile>());
@@ -202,6 +265,7 @@ internal sealed class TrustedLibraries(IReadOnlyDictionary<string, IReadOnlyList
                 if (!p.Types.TryGetValue(t, out var supers)) {
                     // Framework base types and interfaces add framework members, which the policy
                     // classifies by name; any other type outside the file adds code not profiled here.
+                    // (By name, as in Find: the trusted file itself is verified by hash; G4.)
                     if (seen.Count > 1 && !t.StartsWith("System.", StringComparison.Ordinal)) { why = $"{type} derives from {t}, outside trusted file {h[..12]}"; return null; }
                     // Silence on purpose: this version does not define the type, so the lookup fails there.
                     continue;
@@ -213,9 +277,50 @@ internal sealed class TrustedLibraries(IReadOnlyDictionary<string, IReadOnlyList
                 foreach (var s in supers) todo.Enqueue(s);
             }
         }
-        if (!found) { why = "no profiled trusted version has this type"; return null; }
+        if (!found) { why = NoSuchType; return null; }
         return union;
     }
+
+    /// <summary>
+    /// What reflection that looks up the name <paramref name="reached"/> (ignoring case, a name ending in
+    /// '*' as a prefix: <see cref="ReflectionApis.MemberMatches"/>) on <paramref name="type"/> of a trusted
+    /// library can reach: every member of that name of the type, of its base types in the file and of the
+    /// types nested in them (<see cref="LibraryProfile.FindMatching"/>), across every trusted version, with
+    /// the names found (<paramref name="found"/>); or null and why that cannot be known, as for
+    /// <see cref="Lookup"/>, and also when one of those types derives from code outside the file.
+    /// </summary>
+    public Reach.Caps? LookupMatching(string library, string type, string reached, out string why, out List<string>? found) {
+        why = "";
+        found = null;
+        if (!hashesByName.TryGetValue(library, out var hashes) || hashes.Count == 0) { why = $"no managed trusted file is named {library}"; return null; }
+        var union = new Reach.Caps();
+        var names = new List<string>();
+        bool any = false;
+        foreach (var h in hashes) {
+            if (!profiles.TryGetValue(h, out var p)) { why = $"no library profile for trusted file {h[..12]}"; return null; }
+            var caps = p.FindMatching(type, reached, names, out bool outside, out bool outsideCode);
+            // Members of that name inherited from code outside the file are reached too (see FindMatching).
+            if (caps != null && outsideCode) { why = $"may be inherited from a type outside trusted file {h[..12]}"; return null; }
+            if (caps != null) {
+                any = true;
+                foreach (var (cap, d) in caps) union.TryAdd(cap, d);
+                continue;
+            }
+            if (p.Forwarded.Contains(type)) { why = $"{type} is forwarded to another assembly in trusted file {h[..12]}"; return null; }
+            if (outside) { why = $"may be inherited from a type outside trusted file {h[..12]}"; return null; }
+            // Silence on purpose: this version has no such member, so the lookup finds nothing there.
+        }
+        if (!any) { why = NoSuchMember; return null; }
+        found = [.. names.Distinct(StringComparer.Ordinal)];
+        return union;
+    }
+
+    /// <summary>The types directly nested in <paramref name="type"/> ("T/Name") in any profiled trusted version of <paramref name="library"/>.</summary>
+    public IEnumerable<string> NestedTypes(string library, string type) =>
+        hashesByName.TryGetValue(library, out var hashes)
+            ? hashes.Where(profiles.ContainsKey).SelectMany(h => profiles[h].Types.Keys)
+                .Where(t => t.StartsWith(type + "/", StringComparison.Ordinal) && t.IndexOf('/', type.Length + 1) < 0).Distinct(StringComparer.Ordinal)
+            : [];
 
     /// <summary>Whether every trusted version of <paramref name="library"/> has a profile.</summary>
     public bool Profiled(string library) =>

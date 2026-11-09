@@ -13,6 +13,9 @@ extracted/
 manifest*.json
 results*.json
 facts*.json
+# scan state (snapshot, archives, extracted trees, profiles, results, runs) and reports of real mods
+darkmatter-state/
+report*.html
 
 # allowlists are generated per run
 *allowlist*.json

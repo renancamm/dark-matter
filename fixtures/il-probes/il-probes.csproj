@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Not a mod: a generator the test harness runs to write probe assemblies whose IL the C# compiler
+       does not emit (a collection kept on the stack along a backward branch, a property accessor not
+       named get_X/set_X, a branch into the middle of an instruction). The harness only analyzes what
+       it writes; nothing generated is ever loaded to run. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>IlProbes</AssemblyName>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+</Project>

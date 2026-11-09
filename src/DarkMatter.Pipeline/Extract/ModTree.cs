@@ -14,6 +14,7 @@ internal sealed class ArchiveException(string message) : Exception(message);
 internal sealed class ModTree {
     readonly string fullRoot;
     readonly Dictionary<string, bool> claimed = new(StringComparer.Ordinal);  // collision key -> is a directory
+    readonly HashSet<string> renamesShown = new(StringComparer.Ordinal);
     long bytesLeft;
     long filesLeft;
 
@@ -51,6 +52,17 @@ internal sealed class ModTree {
         for (int i = 0; i < keys.Length - 1; i++) claimed[keys[i]] = true;
         claimed[keys[^1]] = directory;
         return true;
+    }
+
+    /// <summary>
+    /// Warns that entries named <paramref name="renamed"/> (<see cref="EntryNames.Renamed"/>) are
+    /// written under another name, once per name for the mod.
+    /// </summary>
+    public void ShowRenames(IEnumerable<string> renamed, Action<string> warn) {
+        foreach (var r in renamed)
+            if (renamesShown.Add(EntryNames.Key(r)))
+                warn($"wrote {Text.Quote(r)} as {Text.Quote(EntryNames.RenamePrefix + r)} (here and wherever else the name occurs) so that "
+                    + "version-control tools, editors and coding agents run in the extracted folder do not act on it");
     }
 
     /// <summary>

@@ -11,7 +11,8 @@ internal enum ArchiveKind { None, Zip, Tar, GzipTar, Unsupported }
 /// <summary>
 /// Recognizes archives and extracts zip, tar and gzip-compressed tar into a <see cref="ModTree"/>.
 /// Archives are untrusted: entries are checked by <see cref="EntryNames"/> and claimed in the
-/// tree before they are written; links, devices and other non-regular entries are never
+/// tree before they are written (version-control, editor and agent-config names renamed first,
+/// see <see cref="EntryNames"/>); links, devices and other non-regular entries are never
 /// written. Every entry that is not written (apart from folders and archive metadata) is counted,
 /// and the caller records an archive with such entries as not extracted: what a player's
 /// extraction tool makes of them is not what the check looked at.
@@ -184,11 +185,12 @@ internal static class Archives {
 
     /// <summary>Checks an entry name and claims its path; false (with a warning) if it is refused.</summary>
     static bool Accept(string name, bool directory, ModTree tree, string[] into, Action<string> warn, out string[] parts) {
-        if (EntryNames.Check(name, directory, out var rel) is { } why) {
+        if (EntryNames.Check(name, directory, out var rel, out var renamed) is { } why) {
             warn($"skipped unsafe entry {Text.Quote(name)}: {why}");
             parts = [];
             return false;
         }
+        tree.ShowRenames(renamed, warn);
         parts = [.. into, .. rel];
         if (rel.Length > 0 && !tree.Claim(parts, directory)) {
             warn($"skipped entry {Text.Quote(name)}: another entry or file has the same path (ignoring case)");

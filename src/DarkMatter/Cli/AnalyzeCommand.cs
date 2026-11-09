@@ -27,12 +27,15 @@ internal static class AnalyzeCommand {
         var gameApi = game?.Methods ?? new Dictionary<string, string[]>();
         var framework = Boundary.SharedFramework();
         var gameAssemblies = game?.Assemblies?.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var analyzer = new Analyzer(policy, allow ?? Allowlist.Empty, gameApi, framework, gameAssemblies);
+        var analyzer = new Analyzer(policy, allow ?? Allowlist.Empty, gameApi, framework, gameAssemblies, game?.InlineArrays, game?.GameTypes);
         var boundary = new Boundary(
             (allow ?? Allowlist.Empty).Names,
             gameAssemblies,
             policy.GameAssemblies,
-            framework);
+            framework,
+            game?.Members,
+            game?.Bases,
+            game?.Interfaces);
 
         List<ModListing> listings;
         if (o.Get("--manifest") is { } mp) {
@@ -61,7 +64,8 @@ internal static class AnalyzeCommand {
 
         var results = new SortedDictionary<string, ModResult>(StringComparer.Ordinal);
         foreach (var listing in listings) {
-            var mod = new ModInput(listing.Name, [.. listing.Files.Select(f => new ModFile(f.Path, FactsFor(f.Path, f.Sha256)))], listing.Unextracted, listing.Scripts);
+            var mod = new ModInput(listing.Name, [.. listing.Files.Select(f => new ModFile(listing.Shown(f.Path), FactsFor(f.Path, f.Sha256)))],
+                listing.Unextracted, [.. listing.Scripts.Select(listing.Shown)]);
             results[listing.Name] = Evaluator.Evaluate(mod, policy, boundary, libraries, gameApi, game?.Types);
         }
 

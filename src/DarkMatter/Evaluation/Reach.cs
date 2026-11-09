@@ -31,7 +31,9 @@ internal static class Reach {
     /// <param name="policy">The policy whose capabilities count.</param>
     /// <param name="codeWrites">Keep writes into the mod's or the game's folders.</param>
     /// <param name="fieldsWritten">As in <see cref="FileAccess.Classify"/>.</param>
-    public static Dictionary<string, Caps> CapabilitySeeds(IReadOnlyCollection<AssemblyFacts> assemblies, Policy policy, bool codeWrites = true, Func<string, bool>? fieldsWritten = null) {
+    /// <param name="reflected">As in <see cref="FileAccess.Classify"/>.</param>
+    public static Dictionary<string, Caps> CapabilitySeeds(IReadOnlyCollection<AssemblyFacts> assemblies, Policy policy, bool codeWrites = true, Func<string, bool>? fieldsWritten = null,
+        Func<string, bool>? reflected = null) {
         var seeds = new Dictionary<string, Caps>(StringComparer.Ordinal);
         foreach (var m in assemblies.SelectMany(a => a.Methods)) {
             var s = Of(seeds, m.Key);
@@ -47,7 +49,7 @@ internal static class Reach {
                 s.TryAdd(e.Cap, e.Detail);
             }
         }
-        foreach (var (m, e) in FileAccess.Classify(assemblies, policy, fieldsWritten)) {
+        foreach (var (m, e) in FileAccess.Classify(assemblies, policy, fieldsWritten, reflected)) {
             // Silence on purpose when asked: see the caller.
             if (!codeWrites && e.Cap == "file-write-code") continue;
             Of(seeds, m.Key).TryAdd(e.Cap, e.Detail);

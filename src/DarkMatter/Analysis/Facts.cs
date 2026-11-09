@@ -39,7 +39,15 @@ internal sealed record Evidence(string Cap, string Detail, Origin Origin);
 /// <param name="Assembly">Name of the assembly the member's type lives in; "" if it cannot be determined.</param>
 /// <param name="Member">"Namespace.Type::Member".</param>
 /// <param name="Classified">A capability or safe rule matched it.</param>
-internal sealed record ExternalRef(string Assembly, string Member, bool Classified);
+/// <param name="Signature">A method's parameter types, joined by <see cref="SignatureSeparator"/>; null for a
+/// field or a member whose signature cannot be decoded. Classifies a game member the runtime finds on a
+/// framework base type (see Boundary.GameTarget) as a direct reference to it would be.</param>
+internal sealed record ExternalRef(string Assembly, string Member, bool Classified, string? Signature = null) {
+    public const char SignatureSeparator = '\u001f';
+
+    /// <summary>The parameter types of <see cref="Signature"/>, or null.</summary>
+    public IReadOnlyList<string>? Parameters => Signature == null ? null : Signature.Length == 0 ? [] : Signature.Split(SignatureSeparator);
+}
 
 /// <summary>
 /// A reflection operation on a value the walker traced to a node (see <see cref="Nodes"/>): a Type or
@@ -76,15 +84,47 @@ internal sealed record BoundedReflection(string Type, string? Assembly, string D
 /// A source "member:NODE" stands for the members of the types NODE holds, which were looked up
 /// (and their capabilities granted) where the lookup was.
 internal static class Nodes {
-    public const string FieldPrefix = "field:", ArgPrefix = "arg:", ReturnPrefix = "ret:", MemberPrefix = "member:";
+    public const string FieldPrefix = "field:", ArgPrefix = "arg:", ReturnPrefix = "ret:", MemberPrefix = "member:", InstancePrefix = "inst:";
     public static string MemberOf(string node) => node.StartsWith(MemberPrefix, StringComparison.Ordinal) ? node : MemberPrefix + node;
     public static string Field(string key) => FieldPrefix + key;
     public static string Arg(string key, int index) => index < 0 ? $"{ArgPrefix}{key}#*" : $"{ArgPrefix}{key}#{index}";
     public static string Return(string key) => ReturnPrefix + key;
+    /// <summary>The run-time types of the instance Harmony passes as <c>__instance</c> to patch method KEY (D7).</summary>
+    public static string Instance(string key) => InstancePrefix + key;
+
+    /// <summary>
+    /// Type nodes made from the members another node holds (D5, D6): the declared types of those members
+    /// (FieldType, PropertyType, ReturnType: exactly those types), or the run-time types of the values read
+    /// through them (FieldInfo.GetValue, PropertyInfo.GetValue: those types or types derived from them).
+    /// "how:NODE"; each holds a type only for a member whose declared type is known and of the matching kind.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, (MemberKind Kind, bool Value)> TypeOf = new Dictionary<string, (MemberKind, bool)>(StringComparer.Ordinal) {
+        ["fieldtype:"] = (MemberKind.Field, false),
+        ["propertytype:"] = (MemberKind.Property, false),
+        ["returntype:"] = (MemberKind.Method, false),
+        ["fieldvalue:"] = (MemberKind.Field, true),
+        ["propertyvalue:"] = (MemberKind.Property, true),
+    };
+
+    /// <summary>The type node for <paramref name="kind"/> and <paramref name="value"/> made from the members <paramref name="node"/> holds (see <see cref="TypeOf"/>).</summary>
+    public static string TypeOfNode(MemberKind kind, bool value, string node) =>
+        TypeOf.First(kv => kv.Value == (kind, value)).Key + node;
+
+    /// <summary>For a node made by <see cref="TypeOfNode"/>: its kind, whether it is of values, and the node it is made from; null otherwise.</summary>
+    public static (MemberKind Kind, bool Value, string Source)? TypeOfParts(string node) {
+        foreach (var (prefix, how) in TypeOf)
+            if (node.StartsWith(prefix, StringComparison.Ordinal)) return (how.Kind, how.Value, node[prefix.Length..]);
+        return null;
+    }
 
     /// <summary>The node key of the field, method or method whose argument the node is.</summary>
     public static string Key(string node) {
-        if (node.StartsWith(MemberPrefix, StringComparison.Ordinal)) node = node[MemberPrefix.Length..];
+        for (bool stripped = true; stripped;) {
+            stripped = false;
+            if (TypeOfParts(node) is { } parts) { node = parts.Source; stripped = true; }
+            if (node.StartsWith(MemberPrefix, StringComparison.Ordinal)) { node = node[MemberPrefix.Length..]; stripped = true; }
+        }
+        if (node.StartsWith(InstancePrefix, StringComparison.Ordinal)) return node[InstancePrefix.Length..];
         if (node.StartsWith(ArgPrefix, StringComparison.Ordinal)) {
             int hash = node.LastIndexOf('#');
             return node[ArgPrefix.Length..(hash > 0 ? hash : node.Length)];
@@ -96,8 +136,11 @@ internal static class Nodes {
     /// <summary>Evidence text for a node: "Type::field", "argument 1 of Type::Method", "what Type::Method returns".</summary>
     public static string Describe(string node) {
         if (node.StartsWith(MemberPrefix, StringComparison.Ordinal)) return "a member of the types of " + Describe(node[MemberPrefix.Length..]);
+        if (TypeOfParts(node) is var (kind, value, source))
+            return value ? $"the run-time type of a value read through {Describe(source)}" : $"the declared {kind switch { MemberKind.Field => "field", MemberKind.Property => "property", _ => "return" }} type of {Describe(source)}";
         var key = Key(node);
         var name = key[(key.IndexOf('|', StringComparison.Ordinal) + 1)..];
+        if (node.StartsWith(InstancePrefix, StringComparison.Ordinal)) return $"the run-time type of the __instance Harmony passes to {name}";
         if (node.StartsWith(ArgPrefix, StringComparison.Ordinal)) return $"argument {node[(node.LastIndexOf('#') + 1)..]} of {name}";
         if (node.StartsWith(ReturnPrefix, StringComparison.Ordinal)) return $"what {name} returns";
         return name;
@@ -118,8 +161,12 @@ internal static class Nodes {
 /// <param name="NameNode">As in <see cref="FieldReflection.NameNode"/>: the members are named by a string parameter.</param>
 /// <param name="Lookup">The lookup method for <paramref name="NameNode"/>.</param>
 /// <param name="Patch">For a <paramref name="PatchTarget"/>: what the patch class's patch methods can do to it.</param>
+/// <param name="NullTestOnly">Found by a name with no assembly part, and the result is only tested for null
+/// (see <c>MethodWalker.OnlyNullTested</c>): a name nothing has finds no type and runs nothing (H9).</param>
+/// <param name="Derived">The type is known only up to its derived types (the run-time type of a value of that
+/// declared type): the members of the game's types that derive from it are reached too (D9).</param>
 internal sealed record ReflectedType(string Type, string? Assembly, IReadOnlyList<string>? Members, string Detail, bool PatchTarget = false,
-    string? NameNode = null, string? Lookup = null, PatchEffect Patch = PatchEffect.Changes);
+    string? NameNode = null, string? Lookup = null, PatchEffect Patch = PatchEffect.Changes, bool NullTestOnly = false, bool Derived = false);
 
 /// <summary>What the patch methods of a Harmony patch can do to the member they patch.</summary>
 internal enum PatchEffect {
@@ -139,16 +186,36 @@ internal enum PatchEffect {
 /// <param name="Member">A member (MethodInfo, FieldInfo, ...) of the type, whose capabilities were
 /// granted where it was looked up; false for the Type itself, which grants them where it is used.</param>
 /// <param name="Bounded">The type or any type derived from it (see <see cref="BoundedReflection"/>).</param>
-internal readonly record struct HeldType(string Type, string? Assembly, bool Member, bool Bounded = false);
+/// <param name="Value">For a member found by a constant name on exactly <paramref name="Type"/>: its kind and
+/// declared type (see <see cref="MemberValue"/>); null when that is not known. Cleared whenever the entry stops
+/// standing for that one member (a member looked up on it, a member known only up to its type).</param>
+internal readonly record struct HeldType(string Type, string? Assembly, bool Member, bool Bounded = false, MemberValue? Value = null);
+
+/// <summary>What a member a lookup finds is: a field, a property or a method (D2).</summary>
+internal enum MemberKind { Field, Property, Method }
+
+/// <summary>
+/// The declared type of the member a lookup by a constant name finds on exactly one type (D2, D5, D6): a field's
+/// type, a property's type (its getter returns the same), a method's return type. Known only when every member
+/// of that kind the name can find on the type and its base types (in any casing, see
+/// <c>ReflectionApis.MemberMatches</c>) has the same declared type, a class or struct (not a generic parameter,
+/// an array, a pointer or a primitive), and every one of those types is the mod's own (in the assembly walked)
+/// or the game's (from the game-API map).
+/// </summary>
+/// <param name="Kind">The kind of member the lookup finds.</param>
+/// <param name="Type">"Namespace.Type" of the declared type (a generic instantiation as its definition).</param>
+/// <param name="Asm">The assembly it lives in ("" when that cannot be determined).</param>
+internal readonly record struct MemberValue(MemberKind Kind, string Type, string Asm);
 
 /// <summary>
 /// A file operation and where its path comes from, as a set of path atoms: an origin ("own",
-/// "game", "saves", "temp", "documents", "user-folder", "environment", "absolute"), "untraced", or a
-/// reference the Evaluator resolves across the mod: "arg:KEY#N" (argument N of method KEY, from
-/// its callers), "field:KEY" (from every store to the field), "ret:KEY" (from what the method
-/// returns), "game:ATOM" (ATOM combined with a literal naming the game's folder, so its Documents
-/// or environment origins are the game's folder). See <c>Evaluation.FileAccess</c>. A path literal
-/// that is a web address is "url".
+/// "game", "saves", "temp", "documents", "documents-folder" for the Documents folder itself,
+/// "user-folder", "environment", "absolute"), "untraced", or a reference the Evaluator resolves
+/// across the mod: "arg:KEY#N" (argument N of method KEY, from its callers), "field:KEY" (from every
+/// store to the field), "ret:KEY" (from what the method returns), "game:ATOM" (ATOM followed directly
+/// by the game's folder names, so the Documents folder itself is the game's folder), and "tail:",
+/// "mid:" and "in:" ATOM (appended, followed by more, made into something else; see PathAtoms).
+/// See <c>Evaluation.FileAccess</c>. A path literal that is a web address is "url".
 /// </summary>
 /// <param name="Kind">Whether it reads or writes.</param>
 /// <param name="Member">The file API called.</param>
@@ -156,6 +223,16 @@ internal readonly record struct HeldType(string Type, string? Assembly, bool Mem
 /// <param name="Url">The operation also accepts a web address in place of a path (see the policy's
 /// <c>fileAccess.urls</c>): one whose path is untraced or a web address connects to the internet.</param>
 internal sealed record FileOp(FileOpKind Kind, string Member, IReadOnlySet<string> Path, bool Url);
+
+/// <summary>
+/// What the walker needs to know about the game's types from the game-API map (D2): the declared types of every
+/// game type's members (see <see cref="AssemblyFacts.MemberTypes"/>; every game type has an entry) and each game
+/// type's base type other than System.Object.
+/// </summary>
+internal sealed record GameTypes(IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> Members, IReadOnlyDictionary<string, string> Bases);
+
+/// <summary>An [InlineArray] type: how many times its one field repeats, and that field's type (see <see cref="AssemblyWalker.ElementKey"/>).</summary>
+internal sealed record InlineArrayShape(int Length, string Element);
 
 /// <summary>A Harmony patch target declared by attribute ([HarmonyPatch], [HarmonyDelegate]).</summary>
 /// <param name="Type">"Namespace.Type" of the patched type, or null if no attribute names one (the
@@ -228,6 +305,13 @@ internal sealed class MethodFacts {
     public List<string> UnresolvedReflection { get; } = [];
     /// <summary>Reflection traced only to a type or its derived types, or to an assembly (see <see cref="BoundedReflection"/>).</summary>
     public List<BoundedReflection> BoundedReflection { get; } = [];
+    /// <summary>
+    /// Members typed (see <see cref="MemberValue"/>) on a game type found by name (AccessTools.TypeByName and the
+    /// like, D5): the type name and evidence text. The walker types them from the game-API map; the Evaluator
+    /// counts each as unresolved reflection unless the game alone has a type of that name (the mod, the framework,
+    /// a policy rule or a trusted library having one too means the lookup can find that one instead).
+    /// </summary>
+    public List<(string Type, string Detail)> TypedByName { get; } = [];
     public List<string> ComActivation { get; } = [];
     public HashSet<string> Callees { get; } = [];
     public HashSet<string> FieldLoads { get; } = [];
@@ -310,13 +394,77 @@ internal sealed class AssemblyFacts {
     public HashSet<string> OpenPathFields { get; } = [];
     /// <summary>Every type defined here ("Namespace.Outer/Inner"), with its base type and interfaces.</summary>
     public Dictionary<string, List<string>> Types { get; } = [];
+    /// <summary>The base type of each type defined here that has one (not an interface, not System.Object itself).</summary>
+    public Dictionary<string, string> BaseTypes { get; } = [];
+    /// <summary>
+    /// The [InlineArray] types defined here (the framework's attribute), by name: the length and the
+    /// element type as <see cref="AssemblyWalker.ElementKey"/> writes it. The game-API map carries
+    /// the game's, so a mod's compiler-generated helper over a game inline array can be checked (C5).
+    /// </summary>
+    public Dictionary<string, InlineArrayShape> InlineArrays { get; } = [];
+    /// <summary>
+    /// The assembly each base type in <see cref="BaseTypes"/> lives in: this assembly's name for one defined
+    /// here, "" when it cannot be determined. Reflection on a type finds what it inherits (H7b).
+    /// </summary>
+    public Dictionary<string, string> BaseTypeAssemblies { get; } = [];
+    /// <summary>
+    /// The methods of properties and events defined here, by the metadata: per method
+    /// ("Namespace.Type::Method"), the properties and events it belongs to ("Namespace.Type::Name"; an
+    /// indexed property also as "Namespace.Type::Item"). A lookup by a property's or event's name reaches
+    /// them whatever they are called (see Evaluation.FieldProvenance).
+    /// </summary>
+    public Dictionary<string, List<string>> Accessors { get; } = [];
+    /// <summary>Types defined here whose properties or events cannot be read (see <see cref="Accessors"/>).</summary>
+    public HashSet<string> AccessorsUnread { get; } = [];
     /// <summary>Every field defined here, "Namespace.Type::Field".</summary>
     public List<string> Fields { get; } = [];
     /// <summary>Node keys of the pointer-typed fields defined here.</summary>
     public HashSet<string> PointerFields { get; } = [];
     /// <summary>Types this assembly forwards to another assembly (exported type forwarders).</summary>
     public List<string> ForwardedTypes { get; } = [];
+    /// <summary>
+    /// The declared types of the members of each type defined here (D2), for a lookup by name to type what it
+    /// finds: per type ("Namespace.Outer/Inner"), per member ("field:Name", "property:Name", "method:Name"), the
+    /// declared type as "Namespace.Type|Assembly", or <see cref="MemberTypes.Unknown"/> when it is not a class or
+    /// struct, or when members of that kind and name disagree (overloads, a property whose getter returns
+    /// another type). The game-API map carries the game's (profile format 7).
+    /// </summary>
+    public Dictionary<string, Dictionary<string, string>> MemberTypes { get; } = [];
 
     public bool IsAnalyzed => Classification is FileClass.Mod or FileClass.LibraryImpersonation;
 }
 
+
+/// <summary>The encoding of <see cref="AssemblyFacts.MemberTypes"/> and of the game-API map's "memberTypes" (D2).</summary>
+internal static class MemberTypes {
+    /// <summary>A member whose declared type is not a class or struct, or not one type.</summary>
+    public const string Unknown = "?";
+
+    public static string Key(MemberKind kind, string name) => kind switch {
+        MemberKind.Field => "field:",
+        MemberKind.Property => "property:",
+        _ => "method:",
+    } + name;
+
+    /// <summary>The kind and name of a member key, or null for one that is not of this form.</summary>
+    public static (MemberKind Kind, string Name)? ParseKey(string key) {
+        int colon = key.IndexOf(':', StringComparison.Ordinal);
+        if (colon <= 0) return null;
+        MemberKind? kind = key[..colon] switch { "field" => MemberKind.Field, "property" => MemberKind.Property, "method" => MemberKind.Method, _ => null };
+        return kind is { } k ? (k, key[(colon + 1)..]) : null;
+    }
+
+    public static string Encode(string type, string asm) => type + "|" + asm;
+
+    /// <summary>The type and assembly of an encoded declared type, or null for <see cref="Unknown"/> or anything malformed.</summary>
+    public static (string Type, string Asm)? Decode(string value) {
+        int bar = value.LastIndexOf('|');
+        return bar > 0 ? (value[..bar], value[(bar + 1)..]) : null;
+    }
+
+    /// <summary>Adds a member's declared type; a second, different one for the same kind and name makes it unknown.</summary>
+    public static void Add(Dictionary<string, Dictionary<string, string>> into, string type, string key, string value) {
+        if (!into.TryGetValue(type, out var members)) into[type] = members = new(StringComparer.Ordinal);
+        members[key] = members.TryGetValue(key, out var before) && before != value ? Unknown : value;
+    }
+}

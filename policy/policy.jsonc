@@ -7,7 +7,7 @@
 // produce must appear in exactly one of "fullAccess" (in one of its groups), "labels",
 // "fileAccess.kinds" or "informational".
 {
-  "version": "13",
+  "version": "35",
   // v3: hardening phase 1 (late binding, Marshal, more deserializers, archive/XML/FileSystemInfo
   //     file labels, certificate store, services/WMI, temp folder counts as outside).
   // v4: hardening phase 2 (classification inversion): a framework member no rule matches is
@@ -104,7 +104,7 @@
   //     fixed web address or a folder (shell-open, shell-open-folder), as for exempt game members:
   //     the instructions that proof is about can change. XmlSerializer for a type the check did not
   //     trace stays Unverified, as an explicit exception to the placement principle (the XML cannot
-  //     choose the type; see docs/threat-model.md). Framework semantics the analyzer
+  //     choose the type). Framework semantics the analyzer
   //     models by name (reflection lookups and sinks, collections and LINQ, name filters, path
   //     combiners and sources, interpolated strings, ProcessStartInfo, Directory.CreateDirectory for
   //     folder opens, clean expression trees, string.Empty, inert patch parameter types) apply only to
@@ -124,6 +124,217 @@
   //     combinations, and, moved from Unverified, unclassified framework members and calls into code
   //     that was not analyzed: gaps in what was checked, not something the mod does). Detection
   //     unchanged; the tier of a mod that was Unverified becomes Full access.
+  // v14: every label has a stable "id", which results carry next to its text (reasons are keyed by
+  //     their capability or finding as before). Results also carry every piece of evidence
+  //     behind a label or reason, sorted, with its count, instead of the first five. Detection
+  //     unchanged: every mod keeps its tier, labels and reasons.
+  // v15: gap closing (G2a, tier gaps found by the G1a review). Any method Harmony would use as a
+  //     transpiler (named Transpiler, [HarmonyTranspiler] or [HarmonyILManipulator], a signature
+  //     taking or returning CodeInstruction, a transpiler given to Harmony.Patch, ReversePatch or
+  //     PatchProcessor.AddTranspiler) is "code-rewrite", whether or not it uses a CodeInstruction
+  //     member. A trusted-library member whose exemption says its arguments are checked at the mod's
+  //     call ("atCall": Harmony's patching API, HarmonyMethod, the patch attributes, the modelled
+  //     AccessTools members, Traverse, the operand setters) is "unresolved-reflection" when it is
+  //     taken as a delegate or method handle, or reached by reflection or a patch, since those
+  //     arguments are then not checked. An operand that is a string on one path and something else
+  //     on another is not inert. FirstOrDefault/SingleOrDefault/LastOrDefault/DefaultIfEmpty with a
+  //     default value can return that default. GetMember, GetMembers and DeclaredMembers also find
+  //     nested types: a name they are narrowed to reaches every member of the nested type of that
+  //     name. A Type or member array handed to a member outside the mod's own assembly that the
+  //     walker does not model can hold anything afterwards (untraced, not bounded). String
+  //     arguments to a method of the mod's own generic type are recorded, and a member-name
+  //     parameter with a call the check saw but no recorded value can name anything. An
+  //     XmlSerializer for a type the code does not fix there (typeof(T), a Type parameter, a run-time
+  //     type) is "xml-serialization-open" (deep game access, as "xml-serialization"); in the game it
+  //     passes on "xml-serialization-game" (deep game access) instead of nothing, which a mod's
+  //     call keeps only where it can choose the type (a type argument that is not the game's, or a
+  //     Type, object or generic argument); reflection and patches on such a game member keep it. Only
+  //     the game member that makes the XmlSerializer has it, not the game code calling that member.
+  //     Mach-O universal files in the 64-bit byte-swapped form are native files.
+  // v16: gap closing (G2b, path-label gaps found by the G1a review). The game folder in Documents is
+  //     only the Documents folder itself followed directly by "/My Games/Kitten Space Agency" (in
+  //     that order and case, "gameFolder"), not any path with "My Games" or "Kitten Space Agency" in
+  //     it; an environment variable is never the game folder. A path parameter of a method that code
+  //     outside the mod can call (public, a Harmony patch method, attributed) is also untraced, next
+  //     to what the mod's own calls pass, as for reflection. Interpolated strings: ToStringAndClear starts a new text (which can also
+  //     follow the old one), what is appended after a branch can begin the text, a handler with a
+  //     format provider or whose address is used for anything but its own members is untraced, and a
+  //     value that is not a string, number, boolean, GUID or one of the mod's own enums (a char, a
+  //     type with its own ToString, a custom format, an alignment on a path) is untraced; char's
+  //     ToString is untraced. Parts joined end to end (string.Concat, interpolation) that can make a
+  //     ".." segment together (a "/." next to "./", or next to a value the check cannot read as text)
+  //     are untraced, and so are string edits that can make one (Substring, Remove, Insert, most
+  //     Replace and Trim calls, ChangeExtension, GetFileNameWithoutExtension, compatibility Normalize).
+  // v17: name gating (G4). Analyzer change only, no rule changed: what R6 still matched by name alone
+  //     must also come from the framework (see AssemblyWalker.Models): a type found by name no longer
+  //     resolves to a mod type of that name alone (the framework's, game's or a library's counts too);
+  //     a mod assembly named "System..." is not the framework; root base types, iterator interfaces,
+  //     InlineArray attributes, inline-array helper callees, enum bases, delegate constructors, the
+  //     types an interpolated value is formatted as, and compiler attributes on a method must be the
+  //     framework's.
+  // v18: explicit-layout overlaps (H2). Analyzer change only, no rule changed: a type of the mod with
+  //     [StructLayout(LayoutKind.Explicit)] whose instance fields share bytes is "raw-memory" unless
+  //     both fields of every overlapping pair are plain data (integers, floats, bools, chars, and the
+  //     mod's own enums and structs of those, a few framework value types such as Vector4 and Guid).
+  //     A reference, pointer, native integer, managed reference, generic or other assembly's value type
+  //     over anything is a type confusion with no API call; a field the check cannot size reaches to the
+  //     end of the type.
+  // v19: lookups by name that find what the name does not spell (H3). Analyzer change only, no rule
+  //     changed: a member name a lookup reaches matches ignoring case (BindingFlags.IgnoreCase, flags
+  //     that are not a constant, the by-name Expression factories, CreateDelegate's ignoreCase), and a
+  //     name ending in '*' as a prefix (GetMember), in the game-API map, library profiles, framework
+  //     nested types and game exemptions. Delegate.CreateDelegate(Type, Type, string, ...) and
+  //     Expression.Call(Type, string, ...), Field/Property(Expression, Type, string) are lookups by name
+  //     on that type. Reflection on a type of the mod reaches the types nested in it. A type found by
+  //     name ignoring case, or through a Type.GetType resolver, is unresolved reflection.
+  //     [IgnoresAccessChecksTo] naming a framework assembly is "unclassified-reference" (non-public
+  //     framework members are not classified).
+  // v20: span and stackalloc accounting made stricter (H4). Analyzer change only, no rule changed: a
+  //     span constructed in place (call instance Span<T>::.ctor(void*, int)) is read from its pointer and
+  //     length arguments, after the receiver, and is accounted for only on the address of a local of
+  //     exactly that span type; a stackalloc size is a count only from mul.ovf/mul.ovf.un (plain mul can
+  //     wrap), and only from a local whose address is never taken; in an explicit layout, a field of a
+  //     value type of the mod encoded as a class is of unknown size. Also: a local whose address is taken
+  //     anywhere in the method (a ref local can write it where the walker does not look) is trusted to
+  //     hold only its declared type, not the type, member, string, path, buffer, start info or
+  //     collection last stored to it (an enumerator only while every address of it goes straight to a
+  //     call that takes it): a web address, a created folder or a harmless type replaced through a ref
+  //     local was Limited access before. The same holds where such a local is known from every store
+  //     to it (after a loop head), and a collection or start info stored to it is no longer followed.
+  // v21: the game-API map tells "read, reaches nothing" from "not read" (H5). Analyzer change only, no
+  //     rule changed: a game method whose signature or body cannot be decoded reaches unanalyzed-call
+  //     (and so does every game method that can reach it), where before it was left out of the map
+  //     and read as reaching nothing; a method whose body is not IL (mixed-mode native code) is
+  //     native-code, and a game assembly with native or precompiled code gives every one of its methods
+  //     native-code (the namespace exemptions below still apply). The game profile lists every method
+  //     and field the game defines: a call into a game assembly to a member this build does not define
+  //     (removed, renamed, forwarded elsewhere) is unanalyzed-call, not a call that reaches nothing.
+  //     Profile format 4.
+  // v22: inherited game members (H5 review). Analyzer change only, no rule changed: a member
+  //     reference or a lookup by name on a game type also finds what its base types define, as the
+  //     runtime and reflection do. A member a game base type defines reaches that member's map entry
+  //     (before: not analyzed for a reference, and nothing at all for reflection or a patch target found
+  //     by name, where GetMethod or AccessTools.Method run the base type's member); one a framework
+  //     base type defines is classified by the rules below as a direct reference to it; one neither
+  //     has stays unanalyzed-call. Profile format 5: members by type, and each game type's base type.
+  //     Also: a member reference that names one of the mod's (or a library's) own types for a member
+  //     neither it nor its base types there define (hand-written metadata; the runtime runs what it
+  //     inherits from another assembly, Process.Kill through a type deriving from Process) is
+  //     unanalyzed-call; before, it read as the mod's own code and reached nothing.
+  // v23: reflection precision (H7). Analyzer change only, no rule changed: a method of the mod's own
+  //     type counts as reached by reflection (any argument) only when a lookup on the type can return
+  //     it (by its name, ignoring case, a name ending in '*' as a prefix, a property's or event's name
+  //     for the methods the metadata gives it, a nested type found through its outer type), not for
+  //     every lookup on the type; lookups by a name parameter and through traced Type fields are
+  //     iterated together. A collection kept on the stack across a block start is followed on when
+  //     every way in carries it there; one kept along a backward branch is not followed (before, a
+  //     conditional backward branch kept it, Limited access). A branch into the middle of an
+  //     instruction (or an exception region not on instructions) is code the check cannot read.
+  //     Traverse.Create(object) on an object of a declared class or struct is that type (exactly, for
+  //     a new or boxed one) or a type derived from it, as for GetType. InvokeMember("") (the default
+  //     member) reaches any member.
+  // v24: H7 review. Analyzer change only, no rule changed: a lookup of a game or trusted-library type's
+  //     property, event or indexer by a name that neither it nor any accessor name of it has (an indexer
+  //     renamed with [IndexerName] found by AccessTools.Indexer, an explicit interface implementation,
+  //     hand-written IL) reaches every member of the type; before, nothing. A Harmony getter or setter
+  //     patch without a name patches the indexer's accessor, a finalizer patch Finalize, an operator patch
+  //     the type's op_ methods (before: no target). A method of the mod's own taken as a method handle
+  //     (ldtoken: an expression tree's call, compiled) is called with any arguments, as a delegate is; and
+  //     one reflection can reach gets any path arguments, as one called from outside does (before, a
+  //     private helper invoked by name kept only its direct calls' paths).
+  // v25: H7b. Analyzer change only, no rule changed: a lookup or a Harmony patch named through one of
+  //     the mod's own types also reaches what the type inherits from outside the mod (a game base type
+  //     through the game-API map, a trusted library's by its profile, a framework type by these rules
+  //     for the names it has; before, nothing). A static method that implements a static abstract or
+  //     static virtual interface member (called through a type parameter) is called with any arguments,
+  //     as a virtual method is. GetType() of a value of a game (or any non-mod) declared type also
+  //     reaches the mod's types that derive from it, by the lookup's names.
+  // v26: H7b review. Analyzer change only, no rule changed: a type nested in the looked-up type (the
+  //     mod's or the game's; the check counts a nested type found from a type as that type) is also
+  //     searched with what it inherits from outside the mod, and a mod type's own indexer no longer
+  //     keeps an indexer lookup (found by its parameters, whatever it is called) from a base type's.
+  // v27: H8, raw-memory precision. The unsafe compile flag (UnverifiableCode) alone is informational
+  //     ("unsafe-code"): the runtime gives it no meaning, and every unsafe construct is found in the IL.
+  //     Members that touch no memory are safe, matched by their full signature: Marshal.OffsetOf (Type,
+  //     string and the generic form), Unsafe.SizeOf and IsNullRef, and the error-code helpers
+  //     SetLastPInvokeError, SetLastSystemError, GetHRForLastWin32Error, GetPInvokeErrorMessage and the
+  //     (int) forms of ThrowExceptionForHR and GetExceptionForHR (the IntPtr forms take an IErrorInfo
+  //     pointer and stay raw memory). Analyzer: a constant 0 stored as a reference is null; a stackalloc
+  //     of 1-byte elements with a variable count (no mul) into a span of that element is accounted
+  //     for under the count rules (the same store of a local whose address is never taken).
+  // v28: H8 review. Analyzer change only, no rule changed: a stackalloc span's length must be the
+  //     count's own value (a plain load of the same store, not the buffer, a product or a count kept in
+  //     another local); a count or counted buffer stored to a local is only a value; and stackalloc in a
+  //     method without localsinit ([SkipLocalsInit]) is raw memory (the buffer holds old stack data).
+  // v29: H9, classification. GCHandle: Alloc, IsAllocated and comparisons are safe; FromIntPtr, the
+  //     explicit conversions, ToIntPtr, Free and Target act on whatever handle address they are given
+  //     (raw memory). System.Runtime.InteropServices.Marshalling (the [LibraryImport] marshallers) is raw
+  //     memory, its COM wrappers native code. The CPU feature checks (IsSupported) of the ISA classes the
+  //     index uses are safe. TextFieldParser opening a path is a file read (the path is traced), the rest
+  //     of it safe. XmlSerializer(Type, XmlAttributeOverrides) is "xml-serialization-open" (the types the
+  //     overrides name are not followed), its event and attribute-collection types safe. DriveInfo's
+  //     queries are user-info (renaming a volume stays unclassified). Process.GetCurrentProcess and
+  //     StartTime are safe. New label capability "ipc" ("Communicates with other programs on your
+  //     computer"): named Mutex, Semaphore and EventWaitHandle and their OpenExisting/TryOpenExisting; the
+  //     unnamed forms and their instance members are safe. Analyzer: a type found by a constant name with
+  //     no assembly part that nothing has, whose result is only tested for null, is not unanalyzed-call; a
+  //     delegate constructed from a native int that no ldftn/ldvirtftn in the method produced is native
+  //     code (it calls whatever address it is given); a call into an assembly named like the game's that
+  //     this game build does not have is the new finding "missing-game-code" (not fully checked).
+  // v30: H9 review. Analyzer change only, no rule changed: the null-test exception applies to lookups only
+  //     (AccessTools.TypeByName, Assembly.GetType, Module.GetType), not to Assembly.CreateInstance, which
+  //     runs a constructor before its result is tested; a type created by name (Assembly.CreateInstance,
+  //     Activator/AppDomain.CreateInstance(assembly, type)) reaches its constructors, as
+  //     Activator.CreateInstance(Type) does (before, a game or library type's constructor was not reached).
+  // v31: H10b review. Analyzer change only, no rule changed: a member reference that names a type of the mod
+  //     (or of a trusted library being profiled) is that code's own member only when the type or one of its
+  //     base types there defines a member of that name with the same signature; the runtime matches name and
+  //     signature, so a reference to Kill() through a type that derives from Process and declares only
+  //     Kill(int) runs Process.Kill (unanalyzed-call; before, the name alone made it the mod's own code). An
+  //     [IgnoresAccessChecksTo] name is parsed as an assembly display name, quotes included (a quoted
+  //     framework assembly name was not recognized); a name that does not parse is unclassified-reference.
+  // v32: H12. Analyzer change only, no rule changed: that signature is also matched when it names the same
+  //     types through other tokens (a type reference into the module for its type definition, one framework
+  //     facade's System.Exception for another's, as merged assemblies write them; before, only the same bytes
+  //     matched, and such a mod's own member counted as unanalyzed-call). A type reference into the module is
+  //     resolved part by part (a type named "A/B" is not B nested in A). A framework type no readable runtime
+  //     file defines is taken to declare a member name looked up on it (environment only).
+  // v33: B review (direct memory access). Analyzer change only, no rule changed: the cpblk and initblk
+  //     opcodes are raw memory whatever their addresses are. Before, only their address operands were
+  //     checked for being managed references; their byte-count operand was not, so a block copy or fill
+  //     of a caller-chosen length through a managed address (a write past the destination's own size) was
+  //     Limited access. The C# compiler never emits a bare cpblk/initblk (it routes through Unsafe/Buffer,
+  //     caught by their own rules), so the two appear only in hand-written IL and always fail closed now.
+  // v34: C review (memory-safe patterns). Analyzer change only, no rule changed: four shapes the runtime keeps
+  //     memory-safe are no longer raw memory. C1: a span of enum elements over a stackalloc buffer (the enum's
+  //     size is its one instance field's, read from the mod's or the framework's metadata). C2: MemoryMarshal
+  //     AsBytes, Cast, Read, Write, TryRead and TryWrite with every type argument plain data (no reference,
+  //     pointer or native integer, nested structs included). C3: explicit-layout unions over framework enums
+  //     and plain framework structs, laid out from the shared framework's own metadata (a framework type that
+  //     holds a reference stays unknown). C4: the stores of a stackalloc initializer of primitive or enum
+  //     elements, in every shape the compiler emits (stind at constant offsets, initblk, cpblk from constant
+  //     data by address or through RuntimeHelpers.CreateSpan): each store's offset and size, or the copy's
+  //     length, is checked against the buffer's constant size; v33's cpblk/initblk rule stays for every other
+  //     shape (it turned out the compiler does emit them, for initializers of three or more constants). C5: the
+  //     game-API map records the game's [InlineArray] types (profile format 6), so a mod's compiler-generated
+  //     inline-array helper over a game type is checked like one over its own. Game-API map format 6.
+  // v35: D (typed reflection reads). Analyzer change only, no rule changed. A member found by a constant name on
+  //     exactly a resolved type (typeof, a constant type name) carries its declared type when every member of
+  //     that kind the name can find there and on the base types (in any casing) is declared as one class or
+  //     struct of the mod's own assembly or of the game (game-API map format 7 records the declared type of
+  //     every game member, and each game type's interfaces). D5: FieldInfo/PropertyInfo.GetValue through it is
+  //     an object of that type or a derived one, as GetType() of a declared value already was (a property only
+  //     when its getter returns its type). D6: FieldType, PropertyType and ReturnType are exactly that type.
+  //     Both also through a member kept in a field, parameter or return value. D7: a Harmony prefix, postfix or
+  //     finalizer's __instance declared as object is an instance of the patched type or a derived one, when the
+  //     attributes name it by typeof and it alone declares the patched method, and the mod's own code neither
+  //     calls the patch method, takes it as a delegate, reaches it by reflection (new HarmonyMethod(type, name)
+  //     now counts as a lookup by that name) nor stores into the parameter. D9: a lookup on a game type known only
+  //     up to its derived types also reaches the same members of the game's types deriving from it (by base type
+  //     or interface). D10: a local whose address is taken somewhere in the method no longer keeps the last
+  //     object stored into it, only its declared type (a store through a ref local could replace it). Results
+  //     can only move from "Uses reflection the check cannot trace" to bounded reflection or to traced members,
+  //     gain labels and reasons (D9) or move to untraced (D10).
 
   // Tiers, lowest first. A mod is in the highest tier that applies: Full access when any reason in
   // "fullAccess" or "fullAccessCombinations" applies, else Limited access when it ships code, else
@@ -196,6 +407,8 @@
       "System.Xml.XmlDocument::Load(System.String)", "System.Xml.XmlReader::Create(System.String,...)",
       "System.Xml.Linq.XDocument::Load(System.String,...)", "System.Xml.Linq.XElement::Load(System.String,...)",
       "System.IO.Compression.ZipFile::OpenAsync",
+      // a CSV parser opening the file at a path (the Stream and TextReader forms read what the mod has)
+      "Microsoft.VisualBasic.FileIO.TextFieldParser::.ctor(System.String,...)",
       // certificates and keys loaded from files
       "System.Security.Cryptography.X509Certificates.X509Certificate::.ctor(System.String,...)",
       "System.Security.Cryptography.X509Certificates.X509Certificate::CreateFromCertFile",
@@ -222,7 +435,9 @@
       "System.Security.Cryptography.X509Certificates.X509Store::Open", "System.Security.Cryptography.X509Certificates.X509Store::get_Certificates",
       "System.Security.Cryptography.CngKey::Open", "System.Security.Cryptography.CngKey::Exists",
       // the computer's network interfaces, addresses, connections, host and domain name
-      "System.Net.NetworkInformation."
+      "System.Net.NetworkInformation.",
+      // the computer's drives, their names, labels, formats and sizes (renaming a volume is not listed: unclassified)
+      "System.IO.DriveInfo::GetDrives", "System.IO.DriveInfo::.ctor", "System.IO.DriveInfo::get_", "System.IO.DriveInfo::ToString"
     ],
     "environment-read": [
       "System.Environment::GetEnvironmentVariable", "System.Environment::ExpandEnvironmentVariables"
@@ -250,6 +465,17 @@
     // Services and WMI can start programs.
     "process-start": ["System.Diagnostics.Process::Start", "System.ServiceProcess.", "System.Management."],
     "process-kill": ["System.Diagnostics.Process::Kill", "System.Diagnostics.Process::CloseMainWindow"],
+    // Named kernel objects are shared with every program of the user (of the computer, with the Global prefix): a
+    // signal to a cooperating program, or one that holds or sets another program's (a single-instance lock).
+    // The unnamed forms are safe. Pipes are "network" (a named pipe can be on another computer).
+    "ipc": [
+      "System.Threading.Mutex::.ctor(System.Boolean,System.String,...)", "System.Threading.Mutex::.ctor(System.String,...)",
+      "System.Threading.Mutex::OpenExisting", "System.Threading.Mutex::TryOpenExisting",
+      "System.Threading.Semaphore::.ctor(System.Int32,System.Int32,System.String,...)",
+      "System.Threading.Semaphore::OpenExisting", "System.Threading.Semaphore::TryOpenExisting",
+      "System.Threading.EventWaitHandle::.ctor(System.Boolean,System.Threading.EventResetMode,System.String,...)",
+      "System.Threading.EventWaitHandle::OpenExisting", "System.Threading.EventWaitHandle::TryOpenExisting"
+    ],
 
     // Devices and the desktop
     "clipboard": ["::SetClipboardText", "::GetClipboardText"],
@@ -263,6 +489,9 @@
       "System.Runtime.InteropServices.Marshal::GetActiveObject",
       "System.Runtime.InteropServices.Marshal::BindToMoniker",
       "System.Runtime.InteropServices.ComWrappers",
+      // the COM source generator's wrappers and marshallers (the rest of Marshalling is raw memory)
+      "System.Runtime.InteropServices.Marshalling.StrategyBasedComWrappers", "System.Runtime.InteropServices.Marshalling.ComObject",
+      "System.Runtime.InteropServices.Marshalling.ComInterfaceMarshaller", "System.Runtime.InteropServices.Marshalling.UniqueComInterfaceMarshaller",
       "System.Runtime.Loader.AssemblyLoadContext::LoadUnmanagedDll",
       // an instruction that calls through a function pointer, for a transpiler or ILGenerator to emit
       "System.Reflection.Emit.OpCodes::Calli"
@@ -276,6 +505,13 @@
       // every Marshal member not listed elsewhere; the safe list carves out the harmless ones
       "System.Runtime.InteropServices.Marshal::", "System.Runtime.InteropServices.GCHandle::AddrOfPinnedObject",
       "System.Runtime.InteropServices.SafeBuffer",
+      // a handle made from, or turned into, a native int, freed or dereferenced: GCHandle is a struct, so a
+      // copy (or a forged one) can free or read a slot that belongs to another handle
+      "System.Runtime.InteropServices.GCHandle::FromIntPtr", "System.Runtime.InteropServices.GCHandle::op_Explicit",
+      "System.Runtime.InteropServices.GCHandle::ToIntPtr", "System.Runtime.InteropServices.GCHandle::Free",
+      "System.Runtime.InteropServices.GCHandle::get_Target", "System.Runtime.InteropServices.GCHandle::set_Target",
+      // the [LibraryImport] marshallers: copy data to and from unmanaged memory and free it
+      "System.Runtime.InteropServices.Marshalling.",
       // vector loads and stores at an unchecked offset from a reference (and aligned ones, through a pointer)
       "System.Numerics.Vector::LoadUnsafe", "System.Numerics.Vector::StoreUnsafe", "System.Numerics.Vector::LoadAligned",
       "System.Numerics.Vector::StoreAligned", "System.Numerics.Vector2::LoadUnsafe", "System.Numerics.Vector2::LoadAligned",
@@ -345,6 +581,11 @@
     "xml-serialization": [
       "System.Xml.Serialization.XmlSerializer::.ctor(System.Type)", "System.Xml.Serialization.XmlSerializer::.ctor(System.Type,System.String)",
       "System.Xml.Serialization.XmlSerializer::.ctor(System.Type,System.Xml.Serialization.XmlRootAttribute)"
+    ],
+    // The same with overrides, which can name more types (XmlArrayItemAttribute(string, Type), ...) that
+    // the check does not follow: always "xml-serialization-open", whatever the first type is.
+    "xml-serialization-open": [
+      "System.Xml.Serialization.XmlSerializer::.ctor(System.Type,System.Xml.Serialization.XmlAttributeOverrides)"
     ]
   },
 
@@ -378,7 +619,15 @@
         // XmlSerializer runs the parameterless constructors and the setters of the types it fills
         // (and generates the code that does it, which is the framework's own); which types those are
         // is not followed. Its type is chosen in the mod's code, not by the XML it reads.
-        "xml-serialization": "Reads or writes XML into objects whose types the check does not follow"
+        "xml-serialization": "Reads or writes XML into objects whose types the check does not follow",
+        // The same for a type the code does not fix where it makes the XmlSerializer: a generic
+        // parameter (typeof(T)), a Type it is given, an object's run-time type (v15).
+        "xml-serialization-open": "Reads or writes XML into objects of a type chosen at run time, which the check does not follow",
+        // A game member that reaches the game's own XmlSerializer (see game.exempt), called where the
+        // mod chooses the type it fills: a type argument that is not the game's, or a Type, object or
+        // generic argument (and anything reflection or a reverse patch runs). Dropped at a call that
+        // gives the game member only its own types or plain values (see v15).
+        "xml-serialization-game": "Has the game read or write XML into objects of types the mod chooses, which the check does not follow"
       }
     },
     // Code the check read that uses features that can reach anything on the computer: they reach
@@ -417,7 +666,10 @@
         "name-collision": "Ships a file named like a part of .NET, the game or a trusted library",
         // A gap in the policy, not something the mod does (policy 9 placed it with raw memory).
         "unclassified-reference": "Uses a part of .NET the check does not classify",
-        "unanalyzed-call": "Calls code that was not analyzed"
+        "unanalyzed-call": "Calls code that was not analyzed",
+        // A call into an assembly named like the game's (game.assemblies) that the game build it is checked
+        // against does not have at all (with a game profile): usually a mod built for another game version.
+        "missing-game-code": "Calls game code that this game version does not have"
       }
     }
   },
@@ -426,8 +678,8 @@
   // capabilities: a Full-access one decides the tier alone), with the "fullAccess" group it is
   // reported in. The
   // KSA mod loader loads any DLL in a mod's folder that something references, and reads
-  // mod.toml, *.deps.json and the game's mod manifest from the mod and game folders (see
-  // docs/loader-spec.md). A mod that connects to the internet and writes there can install code
+  // mod.toml, *.deps.json and the game's mod manifest from the mod and game folders. A
+  // mod that connects to the internet and writes there can install code
   // for the next launch without loading any itself. The check does not follow what is written,
   // so the pair counts, not proof that downloaded bytes reach the write. A write outside the
   // game counts too: its path was not traced to the game's folders, which does not show it
@@ -442,21 +694,23 @@
     { "id": "resource-other-write", "group": "not-fully-checked", "text": "Writes out its own embedded data to places the check cannot place outside the game's code folders", "caps": ["resource-read", "file-write-outside"] }
   ],
 
-  // Labels, in display order. A label applies when the mod has any listed capability.
+  // Labels, in display order. A label applies when the mod has any listed capability. The id is
+  // what results are keyed by (stable across rewordings of the text); ids are unique.
   "labels": [
-    { "text": "Changes how the game works", "caps": ["code-patching"] },
-    { "text": "Connects to the internet", "caps": ["network"] },
-    { "text": "Changes game saves", "caps": ["file-saves"] },
-    { "text": "Changes files in its own or the game's folders", "caps": ["file-write-code"] },
-    { "text": "Changes files outside the game", "caps": ["file-write-outside"] },
-    { "text": "Reads files outside the game", "caps": ["file-read-outside"] },
-    { "text": "Reads information about you and your computer", "caps": ["user-info", "environment-read", "process-list", "registry-read"] },
-    { "text": "Changes system settings", "caps": ["registry-write", "environment-persist", "certificate-store"] },
-    { "text": "Closes other programs", "caps": ["process-kill"] },
-    { "text": "Opens websites in your browser", "caps": ["shell-open"] },
-    { "text": "Opens its own or the game's folders", "caps": ["shell-open-folder"] },
-    { "text": "Uses your clipboard", "caps": ["clipboard"] },
-    { "text": "Uses connected devices", "caps": ["serial-port"] }
+    { "id": "game-changes", "text": "Changes how the game works", "caps": ["code-patching"] },
+    { "id": "internet", "text": "Connects to the internet", "caps": ["network"] },
+    { "id": "game-saves", "text": "Changes game saves", "caps": ["file-saves"] },
+    { "id": "game-folder-writes", "text": "Changes files in its own or the game's folders", "caps": ["file-write-code"] },
+    { "id": "outside-writes", "text": "Changes files outside the game", "caps": ["file-write-outside"] },
+    { "id": "outside-reads", "text": "Reads files outside the game", "caps": ["file-read-outside"] },
+    { "id": "user-info", "text": "Reads information about you and your computer", "caps": ["user-info", "environment-read", "process-list", "registry-read"] },
+    { "id": "system-settings", "text": "Changes system settings", "caps": ["registry-write", "environment-persist", "certificate-store"] },
+    { "id": "closes-programs", "text": "Closes other programs", "caps": ["process-kill"] },
+    { "id": "ipc", "text": "Communicates with other programs on your computer", "caps": ["ipc"] },
+    { "id": "opens-websites", "text": "Opens websites in your browser", "caps": ["shell-open"] },
+    { "id": "opens-folders", "text": "Opens its own or the game's folders", "caps": ["shell-open-folder"] },
+    { "id": "clipboard", "text": "Uses your clipboard", "caps": ["clipboard"] },
+    { "id": "devices", "text": "Uses connected devices", "caps": ["serial-port"] }
   ],
 
   // Members known to need no capability. Same pattern syntax as "capabilities"; the most
@@ -473,15 +727,27 @@
   // Deliberately left unclassified (not fully checked until someone decides): System.AppContext::SetSwitch
   // and SetData (switch runtime safety features; fixtures/classification/unclassified relies on
   // it), Queryable (calls built from MethodInfos; System.Linq.Expressions is classified since v10), System.Runtime.Intrinsics
-  // (LoadUnsafe/StoreUnsafe read and write through a reference), GCHandle (FromIntPtr forges a
-  // reference), TimeZoneInfo, DriveInfo, Debugger, trace listeners, XmlResolver and its
-  // subclasses, XmlTextReader/XmlTextWriter/XPathDocument (open paths and URLs), XmlSerializer
-  // constructors other than (Type), (Type, string) and (Type, XmlRootAttribute) and its factories
-  // (more types, mappings, a location), named Mutex/Semaphore/EventWaitHandle, Process members not
-  // listed here.
+  // (LoadUnsafe/StoreUnsafe read and write through a reference; the feature checks below are safe), the
+  // .NET 10 handle types GCHandle`1, PinnedGCHandle`1 and WeakGCHandle`1 (GCHandle itself is classified
+  // since v29), TimeZoneInfo, DriveInfo::set_VolumeLabel
+  // (renames a volume), Debugger, trace listeners, XmlResolver and its subclasses,
+  // XmlTextReader/XmlTextWriter/XPathDocument (open paths and URLs), XmlSerializer constructors other
+  // than (Type), (Type, string), (Type, XmlRootAttribute) and (Type, XmlAttributeOverrides) and its
+  // factories (more types, mappings, a location), Process members not listed here, the rest of
+  // Microsoft.VisualBasic.FileIO (FileSystem copies and deletes, SpecialDirectories).
   "safe": [
     "System.Runtime.InteropServices.Marshal::SizeOf", "System.Runtime.InteropServices.Marshal::GetLastWin32Error",
     "System.Runtime.InteropServices.Marshal::GetLastPInvokeError", "System.Runtime.InteropServices.Marshal::GetLastSystemError",
+    // layout queries and error codes: they touch no memory (exact signatures; other overloads stay raw memory)
+    "System.Runtime.InteropServices.Marshal::OffsetOf(System.Type,System.String)",
+    "System.Runtime.InteropServices.Marshal::OffsetOf(System.String)",
+    "System.Runtime.CompilerServices.Unsafe::SizeOf()", "System.Runtime.CompilerServices.Unsafe::IsNullRef(!!0&)",
+    "System.Runtime.InteropServices.Marshal::SetLastPInvokeError(System.Int32)",
+    "System.Runtime.InteropServices.Marshal::SetLastSystemError(System.Int32)",
+    "System.Runtime.InteropServices.Marshal::GetHRForLastWin32Error()",
+    "System.Runtime.InteropServices.Marshal::GetPInvokeErrorMessage(System.Int32)",
+    "System.Runtime.InteropServices.Marshal::ThrowExceptionForHR(System.Int32)",
+    "System.Runtime.InteropServices.Marshal::GetExceptionForHR(System.Int32)",
 
     // base types, primitives and value types
     "System.Object::", "System.String::", "System.Char::", "System.Boolean::", "System.Byte::", "System.SByte::",
@@ -544,6 +810,14 @@
     "System.Xml.Serialization.XmlRootAttribute::", "System.Xml.Serialization.XmlAttributeAttribute::",
     "System.Xml.Serialization.XmlArrayAttribute::", "System.Xml.Serialization.XmlArrayItemAttribute::",
     "System.Xml.Serialization.XmlSerializerNamespaces::", "System.Security.SecurityElement::Escape",
+    // the overrides' collections, and the callbacks and event data for unknown XML nodes (a delegate runs a
+    // method classified where it was taken)
+    "System.Xml.Serialization.XmlArrayItemAttributes::", "System.Xml.Serialization.XmlAnyElementAttributes::",
+    "System.Xml.Serialization.XmlAttributeEventArgs::", "System.Xml.Serialization.XmlElementEventArgs::",
+    "System.Xml.Serialization.XmlNodeEventArgs::", "System.Xml.Serialization.UnreferencedObjectEventArgs::",
+    "System.Xml.Serialization.XmlAttributeEventHandler::", "System.Xml.Serialization.XmlElementEventHandler::",
+    "System.Xml.Serialization.XmlNodeEventHandler::", "System.Xml.Serialization.UnreferencedObjectEventHandler::",
+    "System.Xml.Serialization.XmlDeserializationEvents::",
     // reading and writing XML for the type the constructor was given (see "xml-serialization"). A
     // pre-generated <Assembly>.XmlSerializers.dll next to that type's assembly is loaded when it
     // exists: a file in the mod's folder is one of its files (analyzed), and writing one there is
@@ -587,6 +861,18 @@
     "System.Threading.AutoResetEvent::.ctor(System.Boolean)", "System.Threading.ManualResetEvent::.ctor(System.Boolean)",
     "System.Threading.EventWaitHandle::Set", "System.Threading.EventWaitHandle::Reset", "System.Threading.WaitHandle::Wait",
     "System.Threading.WaitHandle::Dispose", "System.Threading.WaitHandle::Close",
+    // unnamed kernel objects are the process's own (the named forms are "ipc")
+    "System.Threading.Mutex::.ctor()", "System.Threading.Mutex::.ctor(System.Boolean)", "System.Threading.Mutex::ReleaseMutex",
+    "System.Threading.Semaphore::.ctor(System.Int32,System.Int32)", "System.Threading.Semaphore::Release",
+    "System.Threading.EventWaitHandle::.ctor(System.Boolean,System.Threading.EventResetMode)",
+    // pinning or keeping an object alive, and comparing handles (what acts on a handle's address is raw memory)
+    "System.Runtime.InteropServices.GCHandle::Alloc", "System.Runtime.InteropServices.GCHandle::get_IsAllocated",
+    "System.Runtime.InteropServices.GCHandle::Equals", "System.Runtime.InteropServices.GCHandle::GetHashCode",
+    "System.Runtime.InteropServices.GCHandle::op_Equality", "System.Runtime.InteropServices.GCHandle::op_Inequality",
+    // CPU feature checks: a constant per machine (the ISA classes the index uses; their loads and stores take pointers)
+    "System.Runtime.Intrinsics.X86.Avx::get_IsSupported$", "System.Runtime.Intrinsics.X86.Fma::get_IsSupported$",
+    "System.Runtime.Intrinsics.X86.Ssse3::get_IsSupported$", "System.Runtime.Intrinsics.X86.Sse2/X64::get_IsSupported$",
+    "System.Runtime.Intrinsics.Arm.AdvSimd::get_IsSupported$",
     // diagnostics inside the process
     "System.Diagnostics.Stopwatch::", "System.Diagnostics.Debug::", "System.Diagnostics.StackTrace::",
     "System.Diagnostics.StackFrame::", "System.Diagnostics.CodeAnalysis.",
@@ -600,6 +886,8 @@
     "System.Diagnostics.Process::add_OutputDataReceived", "System.Diagnostics.Process::add_ErrorDataReceived",
     "System.Diagnostics.Process::add_Exited", "System.Diagnostics.Process::set_EnableRaisingEvents",
     "System.Diagnostics.Process::get_Id", "System.Diagnostics.Process::Dispose", "System.Diagnostics.Process::Close",
+    // the game's own process and when it started (what can be done with the object is each member's own rule)
+    "System.Diagnostics.Process::GetCurrentProcess", "System.Diagnostics.Process::get_StartTime",
     "System.ComponentModel.Component::Dispose",
     // console output and input of the game process
     "System.Console::",
@@ -607,6 +895,9 @@
     "System.IO.Stream::", "System.IO.MemoryStream::", "System.IO.TextReader::", "System.IO.TextWriter::",
     "System.IO.StringReader::", "System.IO.StringWriter::", "System.IO.BinaryReader::", "System.IO.BinaryWriter::",
     "System.IO.StreamReader::", "System.IO.StreamWriter::", "System.IO.BufferedStream::",
+    // a CSV parser over what it was given (opening a path is a file read above)
+    "Microsoft.VisualBasic.FileIO.TextFieldParser::", "Microsoft.VisualBasic.FileIO.FieldType",
+    "Microsoft.VisualBasic.FileIO.MalformedLineException::",
     // paths are strings; GetTempPath is a path source ("temp")
     "System.IO.Path::",
     // runtime and platform facts of the game process
@@ -625,7 +916,8 @@
   ],
 
   // Recorded and reported in --facts output; no label, no effect on the tier.
-  "informational": ["user-folders", "crypto", "compression", "threads", "environment-process", "reflection", "resource-read"],
+  // "unsafe-code": the assembly is compiled with unsafe code enabled (the flag alone, see v27).
+  "informational": ["user-folders", "crypto", "compression", "threads", "environment-process", "reflection", "resource-read", "unsafe-code"],
 
   // File access is labelled by where each path comes from. The path operand of each file
   // operation is traced through the values it is built from: the sources below, literals, the
@@ -644,10 +936,12 @@
     // game's own writes there, seen through the game-API map, are not labelled.
     "code": ["own", "game"],
     // Member -> origin of the path it returns. "special-folder" is Documents for the folder
-    // "documentsFolder", any other user folder otherwise. Documents or an environment variable
-    // combined, in the same path, with a literal matching "gameFolderLiteral" is the game folder;
-    // otherwise both are outside. A literal matching "absolutePathLiteral" (rooted on any platform,
-    // or a URI) that starts a path is an absolute path; a ".." segment in a literal is untraced.
+    // "documentsFolder", any other user folder otherwise. The Documents folder itself followed
+    // directly by text matching "gameFolder" (separators made explicit: Path.Combine and Path.Join
+    // operands are joined with "/") is the game folder; anything else in Documents, and anything
+    // under an environment variable, is outside. A literal matching "absolutePathLiteral" (rooted on
+    // any platform, or a URI) that starts a path is an absolute path; a ".." segment in a literal,
+    // or one that parts joined end to end can make, is untraced.
     "sources": {
       "System.Reflection.Assembly::get_Location": "own",
       "KSA.Mod::get_DirectoryPath": "own",
@@ -670,7 +964,7 @@
       "System.Xml.Linq.XDocument::Load(System.String,...)", "System.Xml.Linq.XElement::Load(System.String,...)"
     ],
     "documentsFolder": 5,
-    "gameFolderLiteral": "my games|kitten space agency",
+    "gameFolder": "^[\\\\/]+My Games[\\\\/]+Kitten Space Agency([\\\\/]|$)",
     "absolutePathLiteral": "^([A-Za-z]:|[\\\\/]|file:)"
   },
 
@@ -681,7 +975,10 @@
   // they are found in such a member and do not flow from it to its callers or to a mod. Use it
   // for a Full-access capability that is the member's intended job and is accounted for another
   // way, or for a capability the check over-approximates there (a label capability only then).
-  // "as" passes a label capability instead. "member" uses the capability pattern syntax without
+  // "as" passes a label capability (or a Full-access capability that the mod's call narrows) instead.
+  // "atCall": the exempted capabilities are accounted for at the mod's direct call (its arguments
+  // are traced there), so the member taken as a delegate or method handle, or reached by
+  // reflection or a patch, is "unresolved-reflection" at the mod. "member" uses the capability pattern syntax without
   // a parameter list or "#N" (profiles merge overloads); "members" lists several patterns that share
   // the capabilities and the reason. Every exemption needs a reason. Profiles
   // record the policy's SHA-256, so they must be regenerated after any change here.
@@ -715,7 +1012,16 @@
       // The game reads and writes its own content, gauges and settings as XML with XmlSerializer, for
       // types the game names (before policy 11 an unclassified framework member, which a game profile
       // does not carry). A mod's own XmlSerializer is checked at the mod.
+      // An XmlSerializer whose type the game's code does not fix there (a generic parameter, a Type it
+      // is given, an object's run-time type) is "xml-serialization-open": a game member that reaches
+      // one passes on "xml-serialization-game" instead, which a mod's call keeps only where the mod can
+      // choose the type (v15).
       { "member": "KSA.", "caps": ["xml-serialization"], "reason": "the game's own XML content and settings" },
+      { "member": "KSA.", "caps": ["xml-serialization-open"], "as": "xml-serialization-game", "reason": "the game's own XML, for a type its caller can choose" },
+      // ... and only the game member that makes the XmlSerializer has it: a game method that calls one
+      // names the type itself (a game method that passes on a type it is given is not followed; see
+      // README, Known gaps). Without this, every window of the game would carry it through its menus.
+      { "member": "KSA.", "caps": ["xml-serialization-game"], "reason": "game callers of the game's XML helpers choose the type themselves" },
 
       // Loads the game's own, already loaded assembly by the constant name "KSA" to read its
       // version attribute. Reached from saves, settings and most windows.
@@ -743,16 +1049,16 @@
       // (CodeInstruction, CodeMatcher, Transpilers) are not exempt, so a mod using them is code-rewrite.
       // What a mod's transpiler rewrites is placed at the mod ("rewrite-outside-game" is exempt here:
       // inside, Harmony adds the transpilers it is given to originals it is given).
-      { "library": "0Harmony", "member": "HarmonyLib.Harmony::", "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.PatchClassProcessor::", "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.PatchProcessor::", "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.ReversePatcher::", "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "a reverse patch copies a traced original into a mod stub (a reflection sink at the mod)" },
-      { "library": "0Harmony", "member": "HarmonyLib.HarmonyMethod::", "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "wraps a patch method; its target must be traced at the mod (reflection sink)" },
+      { "library": "0Harmony", "member": "HarmonyLib.Harmony::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.PatchClassProcessor::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.PatchProcessor::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.ReversePatcher::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "a reverse patch copies a traced original into a mod stub (a reflection sink at the mod)" },
+      { "library": "0Harmony", "member": "HarmonyLib.HarmonyMethod::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "wraps a patch method; its target must be traced at the mod (reflection sink)" },
       // Harmony's patch attributes: their constructors only store the target (the (typeName,
       // methodName) form looks the type up with AccessTools.TypeByName). The check decodes the
       // target from the attribute's value at the mod instead.
-      { "library": "0Harmony", "member": "HarmonyLib.HarmonyPatch::", "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.HarmonyDelegate::", "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.HarmonyPatch::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.HarmonyDelegate::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
       // Harmony's reflection helpers. Their lookups and sinks are modelled at the mod (constant
       // names, "Type:Member" strings, traced targets for FieldRefAccess, MethodDelegate,
       // CreateInstance, MakeDeepCopy, GetDefaultValue, Traverse; plural lookups and enumerations
@@ -770,8 +1076,8 @@
           "HarmonyLib.AccessTools::GetDeclared", "HarmonyLib.AccessTools::GetMethodNames", "HarmonyLib.AccessTools::GetFieldNames",
           "HarmonyLib.AccessTools::GetPropertyNames", "HarmonyLib.AccessTools::AllTypes", "HarmonyLib.AccessTools::AllAssemblies",
           "HarmonyLib.AccessTools::GetTypesFromAssembly", "HarmonyLib.AccessTools::GetTypes"
-        ], "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "reflection helpers modelled at the mod's call" },
-      { "library": "0Harmony", "member": "HarmonyLib.Traverse", "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "reflection helper modelled at the mod's call" },
+        ], "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "reflection helpers modelled at the mod's call" },
+      { "library": "0Harmony", "member": "HarmonyLib.Traverse", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "reflection helper modelled at the mod's call" },
       // Harmony's members that store the operand of an instruction they are given (a CodeMatch is an
       // instruction too). The operand is a reflection sink at the mod's call, and writes through
       // CodeMatcher.Operand (a reference to it) are checked there; the transpiler helpers that look a
@@ -780,7 +1086,7 @@
           "HarmonyLib.CodeInstruction::.ctor", "HarmonyLib.CodeInstruction::Clone", "HarmonyLib.CodeMatch::.ctor", "HarmonyLib.CodeMatch::Set",
           "HarmonyLib.CodeMatcher::Set", "HarmonyLib.CodeMatcher::SetAndAdvance", "HarmonyLib.CodeMatcher::SetOperandAndAdvance",
           "HarmonyLib.CodeMatcher::get_Operand", "HarmonyLib.Transpilers::MethodReplacer", "HarmonyLib.Transpilers/<MethodReplacer>"
-        ], "caps": ["unresolved-reflection"], "reason": "stores the instruction operand it is given; checked at the mod's call" },
+        ], "atCall": true, "caps": ["unresolved-reflection"], "reason": "stores the instruction operand it is given; checked at the mod's call" },
       // Harmony's debug log (FileLog: harmony.log.txt on the desktop, or the file named by
       // HARMONY_LOG_FILE) is written by the patching API only when debug logging is turned on
       // (the user's HARMONY_DEBUG setting, or a mod setting Harmony.DEBUG). A mod calling FileLog

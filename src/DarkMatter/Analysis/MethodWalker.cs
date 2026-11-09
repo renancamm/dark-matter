@@ -26,6 +26,16 @@ internal enum Tag {
     Stackalloc,
     /// <summary>Address of compiler-emitted static data (<see cref="Slot.Number"/> is its size in bytes).</summary>
     StaticData,
+    /// <summary>An address inside a localloc buffer of constant size, at a constant offset: <see cref="Slot.Number"/>
+    /// is the number of bytes from it to the buffer's end (C4, policy 34).</summary>
+    Inside,
+    /// <summary>The field handle (ldtoken) of compiler-emitted static data (<see cref="Slot.Number"/> is its size in bytes).</summary>
+    DataToken,
+    /// <summary>A span RuntimeHelpers.CreateSpan made over compiler-emitted static data (<see cref="Slot.Number"/> is its size in bytes).</summary>
+    StaticSpan,
+    /// <summary>A managed reference into compiler-emitted static data, from a <see cref="StaticSpan"/>'s indexer:
+    /// <see cref="Slot.Number"/> is the number of bytes from it to the data's end.</summary>
+    StaticRef,
     /// <summary>A count times an element size (<see cref="Slot.Text"/>): the count is a local (<see cref="Slot.Store"/>) or a constant (<see cref="Slot.Number"/>).</summary>
     Count,
     /// <summary>The result of sizeof (<see cref="Slot.Text"/> is the type).</summary>
@@ -67,6 +77,12 @@ internal enum Tag {
     Expr,
     /// <summary>A delegate to (or a function pointer of) a method of this assembly (<see cref="Slot.Number"/> is its metadata token).</summary>
     Delegate,
+    /// <summary>
+    /// An object whose run-time type is one of the types a type node holds (<see cref="Slot.Text"/> is the node,
+    /// see <see cref="Nodes"/>): a value read through a member a node holds (<see cref="Nodes.TypeOfNode"/>), or the
+    /// instance Harmony passes to a patch method (<see cref="Nodes.Instance"/>). GetType() of it is that node (D5, D7).
+    /// </summary>
+    Value,
 }
 
 /// <summary>A tracked value on the stack or in a local.</summary>
@@ -77,12 +93,17 @@ internal enum Tag {
 /// loads can be told to hold the same value.</param>
 /// <param name="Asm">For a Type or member: the assembly its type lives in, null when it was found by
 /// name in whatever assembly has it, "" when that cannot be determined (see <see cref="ReflectedType"/>).</param>
-internal readonly record struct Slot(Tag Tag, string? Text = null, int Number = 0, int Store = -1, string? Asm = null) {
+/// <param name="Value">For a Member: the kind and declared type of the one member a lookup by a constant name found on
+/// exactly a resolved type (see <see cref="MemberValue"/>), which types what is read through it (D5, D6); null otherwise.</param>
+internal readonly record struct Slot(Tag Tag, string? Text = null, int Number = 0, int Store = -1, string? Asm = null, MemberValue? Value = null) {
     public static readonly Slot Unknown = new(Tag.Unknown);
     /// <summary>Flag on a Member: a Traverse moved to a field or property.</summary>
     public const int Moved = 1;
     /// <summary>Flag on a Type or Member: that type or any type derived from it.</summary>
     public const int OrDerived = 2;
+    /// <summary>Flag on a Path made by a join: on some way into it the value was not known to be a
+    /// string (an untraced object), so it is not an inert string (see MethodWalker.OperandTarget).</summary>
+    public const int NotOnlyText = 4;
 }
 
 /// <summary>A class or struct a signature or token names, with the assembly it lives in.</summary>
@@ -104,6 +125,10 @@ internal sealed record MethodShape(IReadOnlySet<int> ByrefArgs, IReadOnlySet<int
     public bool ReflectionReturn { get; init; }
     /// <summary>Declared type of each argument (counting this), null where it is not a class or struct.</summary>
     public IReadOnlyList<DeclaredType?> ArgTypes { get; init; } = [];
+    /// <summary>For a Harmony patch method: its <c>__instance</c> argument (declared as object), or -1 (see AssemblyWalker.PatchInstance).</summary>
+    public int InstanceArg { get; init; } = -1;
+    /// <summary>The types the instance in <see cref="InstanceArg"/> is of (each that type or a derived one); null when they are not known.</summary>
+    public IReadOnlyList<(string Type, string Asm)>? InstanceTypes { get; init; }
 }
 
 /// <summary>
@@ -121,6 +146,9 @@ internal sealed partial class MethodWalker {
     const string ProcessStart = "System.Diagnostics.Process::Start";
     // The operand of a Harmony instruction: what the instruction a transpiler returns refers to.
     const string InstructionOperand = "HarmonyLib.CodeInstruction::operand";
+    // A method pointer an ldftn or ldvirtftn made (of a method of any assembly; one of this assembly's own
+    // ldftn is a Tag.Delegate): what a delegate's constructor must be given (see Call, H9).
+    const string MethodPointer = "ldftn";
 
     static readonly HashSet<string> TypeNameHandlingSetters = [
         "Newtonsoft.Json.JsonSerializerSettings::set_TypeNameHandling", "Newtonsoft.Json.JsonSerializer::set_TypeNameHandling",
@@ -139,20 +167,32 @@ internal sealed partial class MethodWalker {
         OpCodes.Ldind_Ref.Value, OpCodes.Ldobj.Value,
     ];
     static readonly HashSet<short> MulOps = [OpCodes.Mul.Value, OpCodes.Mul_Ovf.Value, OpCodes.Mul_Ovf_Un.Value];
+    // The multiplications that cannot wrap (they throw instead), the only ones a stackalloc size is read from.
+    static readonly HashSet<short> CheckedMulOps = [OpCodes.Mul_Ovf.Value, OpCodes.Mul_Ovf_Un.Value];
     static readonly HashSet<string> SpanPointerCtors = ["System.Span`1::.ctor", "System.ReadOnlySpan`1::.ctor"];
-    static readonly Dictionary<string, int> PrimitiveSizes = new(StringComparer.Ordinal) {
-        ["System.Byte"] = 1,
-        ["System.SByte"] = 1,
-        ["System.Boolean"] = 1,
-        ["System.Char"] = 2,
-        ["System.Int16"] = 2,
-        ["System.UInt16"] = 2,
-        ["System.Int32"] = 4,
-        ["System.UInt32"] = 4,
-        ["System.Single"] = 4,
-        ["System.Int64"] = 8,
-        ["System.UInt64"] = 8,
-        ["System.Double"] = 8,
+    static readonly HashSet<string> SpanIndexers = ["System.Span`1::get_Item", "System.ReadOnlySpan`1::get_Item"];
+    const string CreateSpan = "System.Runtime.CompilerServices.RuntimeHelpers::CreateSpan";
+    // MemoryMarshal's reinterpretations of a span's bytes as another type (C2, policy 34): the runtime
+    // refuses a type argument that holds a reference, bounds the result to the span's own bytes
+    // (Cast rounds the length down, Read/Write check the span holds sizeof(T)) and the result is a
+    // bounds-checked span or a value. With every type argument plain data (no reference, pointer or
+    // native integer, nested structs included), they reach only bytes of the span they are given.
+    static readonly HashSet<string> MemoryMarshalReinterpretations = [
+        "System.Runtime.InteropServices.MemoryMarshal::AsBytes", "System.Runtime.InteropServices.MemoryMarshal::Cast",
+        "System.Runtime.InteropServices.MemoryMarshal::Read", "System.Runtime.InteropServices.MemoryMarshal::Write",
+        "System.Runtime.InteropServices.MemoryMarshal::TryRead", "System.Runtime.InteropServices.MemoryMarshal::TryWrite",
+    ];
+    // Bytes a store through an address writes, by opcode: stind.i is a native integer (8 on the 64-bit
+    // runtime the game ships; a smaller one writes less). stind.ref and stobj are not here: a reference
+    // stored into stack memory the collector does not scan is a dangling reference (C4).
+    static readonly Dictionary<short, int> StoreSizes = new() {
+        [OpCodes.Stind_I1.Value] = 1,
+        [OpCodes.Stind_I2.Value] = 2,
+        [OpCodes.Stind_I4.Value] = 4,
+        [OpCodes.Stind_I8.Value] = 8,
+        [OpCodes.Stind_R4.Value] = 4,
+        [OpCodes.Stind_R8.Value] = 8,
+        [OpCodes.Stind_I.Value] = 8,
     };
 
     // A web address safe to hand to the shell: http(s), no spaces or quotes.
@@ -192,12 +232,29 @@ internal sealed partial class MethodWalker {
     Dictionary<int, Slot> summaries = [];
     // A summary round (see Summaries): a local with no store seen yet holds only its default, null.
     bool optimistic;
+    // The method's header asks for its locals and stackalloc memory to be cleared (localsinit; C#
+    // leaves it out under [SkipLocalsInit]).
+    bool initLocals = true;
     // This pass: the join of the values stored to each local.
     readonly Dictionary<int, Slot> stored = [];
     const int SummaryRounds = 8;
     // Declared types of the locals (null where not a class or struct).
     IReadOnlyList<DeclaredType?> localDeclared = [];
+    // The locals' types, as in the signature (see PointerSignatureAccountedFor).
+    ImmutableArray<TypeShape> localShapes = [];
+    // Locals whose address is taken anywhere in the method (ldloca), and the stores to them: a local
+    // can be written through its address without a store the walker sees, so two loads of one store
+    // may differ (see PointerSignatureAccountedFor).
+    readonly HashSet<int> addressedLocals = [];
+    // Locals an address of which is not handed straight to a call (the next instruction): it can be
+    // kept and written through later.
+    readonly HashSet<int> escapingLocals = [];
+    readonly HashSet<int> aliasedStores = [];
     int offset;  // of the instruction being walked: a collection's id is where it is created
+    // The instructions of the pass and the index of the one being walked (for NullTestOnly).
+    List<Instruction> passCode = [];
+    byte[] passIl = [];
+    int passIndex;
 
     // Arrays and lists of members, types or expressions created in this method, by id. Every slot
     // that holds one refers to it by id, so a change through one alias is seen through all. Any use
@@ -241,7 +298,7 @@ internal sealed partial class MethodWalker {
     static bool Traced(Slot s) => s.Tag is Tag.Type or Tag.Member or Tag.Node or Tag.Null or Tag.Element;
 
     // Values a local keeps across blocks and a branch carries (see Load and Carried).
-    static bool Kept(Slot s) => Traced(s) || s.Tag is Tag.Path or Tag.Collection or Tag.Enumerator or Tag.Expr or Tag.Object || IsOperand(s);
+    static bool Kept(Slot s) => Traced(s) || s.Tag is Tag.Path or Tag.Collection or Tag.Enumerator or Tag.Expr or Tag.Object or Tag.Value || IsOperand(s);
 
     // The operand of an existing Harmony instruction (see OperandTarget).
     static bool IsOperand(Slot s) => s is { Tag: Tag.Unknown, Text: InstructionOperand };
@@ -253,11 +310,13 @@ internal sealed partial class MethodWalker {
     // but itself (or null) is lost: an alias the walker cannot name may change it.
     Slot Join(Slot a, Slot b) {
         // The address of an instruction's operand stays one (see OperandTarget) when either side is.
-        if (a.Tag == Tag.Address && b.Tag == Tag.Address) return new(Tag.Address, a.Text ?? b.Text);
+        // So does the address of an interpolation handler local, when both are that local's (see Interpolate).
+        if (a.Tag == Tag.Address && b.Tag == Tag.Address)
+            return new(Tag.Address, a.Text ?? b.Text, a.Number == b.Number && handlers.ContainsKey(a.Number - 1) ? a.Number : 0);
         if (a.Tag == Tag.String && b.Tag == Tag.String && a.Text == b.Text) return a with { Store = -1 };
         if (a.Tag is Tag.Path or Tag.String || b.Tag is Tag.Path or Tag.String)
             return a.Tag is Tag.Path or Tag.String or Tag.Null or Tag.Unknown or Tag.Object && b.Tag is Tag.Path or Tag.String or Tag.Null or Tag.Unknown or Tag.Object
-                ? PathSlot(Atoms(a, true).Concat(Atoms(b, true)))
+                ? PathSlot(Atoms(a, true).Concat(Atoms(b, true))) with { Number = MaybeNotText(a) || MaybeNotText(b) ? Slot.NotOnlyText : 0 }
                 : Slot.Unknown;
         if (a.Tag is Tag.Collection or Tag.Enumerator || b.Tag is Tag.Collection or Tag.Enumerator) {
             if (a.Tag == b.Tag && a.Number == b.Number) return a with { Store = -1 };
@@ -273,12 +332,16 @@ internal sealed partial class MethodWalker {
             return a with { Number = Math.Min(a.Number, b.Number), Store = -1 };
         if (a.Tag == Tag.Object && b.Tag == Tag.Null) return a with { Store = -1 };
         if (b.Tag == Tag.Object && a.Tag == Tag.Null) return b with { Store = -1 };
+        // A value of the types of one node stays one; anything else it meets is not followed.
+        if (a.Tag == Tag.Value && b.Tag == Tag.Value && a.Text == b.Text) return a with { Store = -1 };
+        if (a.Tag == Tag.Value && b.Tag == Tag.Null) return a with { Store = -1 };
+        if (b.Tag == Tag.Value && a.Tag == Tag.Null) return b with { Store = -1 };
         if (IsOperand(a) && (IsOperand(b) || b.Tag == Tag.Null)) return a with { Store = -1 };
         if (IsOperand(b) && a.Tag == Tag.Null) return b with { Store = -1 };
         if (!Traced(a) || !Traced(b)) return Slot.Unknown;
         if (a.Tag == Tag.Null) return b with { Store = -1 };
         if (b.Tag == Tag.Null) return a with { Store = -1 };
-        if (a.Tag == b.Tag && a.Text == b.Text && a.Number == b.Number && a.Asm == b.Asm) return a with { Store = -1 };
+        if (a.Tag == b.Tag && a.Text == b.Text && a.Number == b.Number && a.Asm == b.Asm && a.Value == b.Value) return a with { Store = -1 };
         // Two different traced types or members: one of them (the compiler reuses a local for both).
         return HeldOf(a) is { } ha && HeldOf(b) is { } hb && ha.Count + hb.Count <= MaxUnion
             ? new(Tag.Element, Number: assembly.Union(ha.Concat(hb))) : Slot.Unknown;
@@ -286,16 +349,25 @@ internal sealed partial class MethodWalker {
 
     const int MaxUnion = 32;
 
+    // Whether a value joined into a path may be something other than a string: an untraced value or an
+    // object of a type that is not an inert one (see InertOperands), or a join that had one.
+    static bool MaybeNotText(Slot s) => s.Tag switch {
+        Tag.String or Tag.Null => false,
+        Tag.Path => (s.Number & Slot.NotOnlyText) != 0,
+        Tag.Object => s.Text == null || !InertOperands.Contains(s.Text),
+        _ => true,
+    };
+
     // The traced types and members a value is one of: a type or member, or a set of them; null for anything else.
     IReadOnlySet<HeldType>? HeldOf(Slot s) => s.Tag switch {
         Tag.Type or Tag.Member when s.Text != null && (s.Number & Slot.Moved) == 0
-            => new HashSet<HeldType> { new(s.Text, s.Asm, s.Tag == Tag.Member, (s.Number & Slot.OrDerived) != 0) },
-        Tag.Element when s.Number < 0 => s.Text == "member" ? assembly.UnionOf(s.Number).Select(h => h with { Member = true }).ToHashSet() : assembly.UnionOf(s.Number),
+            => new HashSet<HeldType> { new(s.Text, s.Asm, s.Tag == Tag.Member, (s.Number & Slot.OrDerived) != 0, s.Value) },
+        Tag.Element when s.Number < 0 => s.Text == "member" ? assembly.UnionOf(s.Number).Select(h => h with { Member = true, Value = null }).ToHashSet() : assembly.UnionOf(s.Number),
         _ => null,
     };
 
     // What a stack slot carries into a forward branch target.
-    static Slot Carried(Slot s) => s.Tag == Tag.Address ? new(Tag.Address, s.Text)
+    Slot Carried(Slot s) => s.Tag == Tag.Address ? new(Tag.Address, s.Text, handlers.ContainsKey(s.Number - 1) ? s.Number : 0)
         : Kept(s) || s.Tag is Tag.String ? s with { Store = -1 } : Slot.Unknown;
 
     static Slot PathSlot(IEnumerable<string> atoms) => new(Tag.Path, PathAtoms.Encode(atoms));
@@ -335,8 +407,9 @@ internal sealed partial class MethodWalker {
     void Note(string cap, string detail, Origin origin = Origin.Reference) => mf.Caps.Add(new(cap, detail, origin));
 
     // Records a reference into another assembly; the Evaluator decides whether that code was analyzed.
-    void External(EntityHandle h, string name, Policy.Classification c) {
-        if (assembly.ExternalAssemblyOf(h) is { } asm) mf.ExternalRefs.Add(new(asm, name, c.Matched));
+    void External(EntityHandle h, string name, Policy.Classification c, IReadOnlyList<string>? ps) {
+        if (assembly.ExternalAssemblyOf(h) is { } asm)
+            mf.ExternalRefs.Add(new(asm, name, c.Matched, ps == null ? null : string.Join(ExternalRef.SignatureSeparator, ps)));
     }
 
     Slot Pop() {
@@ -361,6 +434,27 @@ internal sealed partial class MethodWalker {
             Coll(s.Number).Escaped ??= why;
             Coll(s.Number).Exposed = true;
         } else if (s is { Tag: Tag.Address, Number: > 0 } && LocalValue(s.Number - 1) is { Tag: Tag.Enumerator or Tag.Collection } held) Lose(held, why);
+    }
+
+    // A value carried into a block that starts with nothing known (a loop head, H7): the code there
+    // sees it only as an unknown value, and can change it without the walker seeing what it puts in.
+    // A start info is no longer followed; a collection's elements are untraced.
+    void Drop(Slot s, string why) {
+        EscapeStartInfo(s);
+        Lose(s, why);
+        if (s.Tag is Tag.Collection or Tag.Enumerator) Coll(s.Number).Tainted ??= why;
+        else if (s is { Tag: Tag.Address, Number: > 0 } && LocalValue(s.Number - 1) is { Tag: Tag.Enumerator or Tag.Collection } held) Drop(held, why);
+    }
+
+    // A collection handed to a member the walker does not model. Code outside this assembly (the
+    // framework's Array.SetValue, IList.Add or Array.Copy, a library, the game) can put anything into
+    // it: its elements are untraced. The mod's own code is analyzed, and an escape there only bounds
+    // them (see README, Known gaps).
+    void Hand(Slot s, EntityHandle h, string name) {
+        Lose(s, $"passed to {name}");
+        if (assembly.ExternalAssemblyOf(h) == null) return;
+        if (s.Tag is Tag.Collection or Tag.Enumerator) Coll(s.Number).Tainted ??= $"passed to {name}, which can put anything into it";
+        else if (s is { Tag: Tag.Address, Number: > 0 } && LocalValue(s.Number - 1) is { Tag: Tag.Enumerator or Tag.Collection } held) Hand(held, h, name);
     }
 
     // What a local holds, without the side effects of a load.
@@ -392,7 +486,7 @@ internal sealed partial class MethodWalker {
             case Tag.Null:
                 break;
             case Tag.Type or Tag.Member when v.Text != null && (v.Number & Slot.Moved) == 0:
-                c.Held.Add(new(v.Text, v.Asm, v.Tag == Tag.Member, (v.Number & Slot.OrDerived) != 0));
+                c.Held.Add(new(v.Text, v.Asm, v.Tag == Tag.Member, (v.Number & Slot.OrDerived) != 0, v.Value));
                 break;
             case Tag.Element when v.Number < 0:
                 c.Held.UnionWith(HeldOf(v)!);
@@ -423,7 +517,7 @@ internal sealed partial class MethodWalker {
                 var (x, asMembers) = todo.Pop();
                 if (!seen.Add((x, asMembers))) continue;  // a cycle adds nothing new
                 if (!collections.TryGetValue(x, out var cx)) { tainted ??= "holds elements of a collection the check does not follow"; continue; }
-                held.UnionWith(asMembers ? cx.Held.Select(h => h with { Member = true }) : cx.Held);
+                held.UnionWith(asMembers ? cx.Held.Select(h => h with { Member = true, Value = null }) : cx.Held);
                 tainted ??= cx.Tainted;
                 escaped ??= cx.Escaped;
                 if (cx.Node != null) {
@@ -445,7 +539,7 @@ internal sealed partial class MethodWalker {
     // What an element is one of: its collection's state, as members when it was looked up on one.
     CollectionState? StateOf(Slot element) {
         if (StateOf(element.Number) is not { } state || element.Text != "member") return StateOf(element.Number);
-        return state with { Held = state.Held.Select(h => h with { Member = true }).ToHashSet(), Node = state.Node is { } n ? Nodes.MemberOf(n) : null };
+        return state with { Held = state.Held.Select(h => h with { Member = true, Value = null }).ToHashSet(), Node = state.Node is { } n ? Nodes.MemberOf(n) : null };
     }
 
     void ClearStack() {
@@ -461,6 +555,20 @@ internal sealed partial class MethodWalker {
         // store to the local in the method.
         else if (summaries.TryGetValue(i, out var s)) t = Kept(s) ? s : Slot.Unknown;
         else t = optimistic ? new(Tag.Null) : Slot.Unknown;
+        // A local whose address is taken somewhere in the method may have been written through that
+        // address where the walker does not see it (a ref local, an address kept on the stack): what it
+        // was last seen to hold is not trusted, only its declared type, and a collection or start info
+        // it held is no longer followed (the local may still hold it). An enumerator's address is taken
+        // for its own members (foreach): it is not trusted only when an address of it is used otherwise
+        // than handed straight to a call (see escapingLocals).
+        if (addressedLocals.Contains(i) && t.Tag is not (Tag.Unknown or Tag.Object) && (t.Tag is not (Tag.Enumerator or Tag.StaticSpan) || escapingLocals.Contains(i))) {
+            Escape(t);
+            t = Slot.Unknown;
+        }
+        // An object it was seen to hold is not trusted either: anything of the local's declared type (any type,
+        // for one declared as object) can be stored through the address, so only that declared type is (below).
+        // Before D10 the last object seen was kept, which could be narrower than what the local holds.
+        if (addressedLocals.Contains(i) && t.Tag == Tag.Object) t = Slot.Unknown;
         // Otherwise it holds an object of the local's declared type.
         if (t.Tag == Tag.Unknown && t.Text == null && i < localDeclared.Count && localDeclared[i] is { } d) t = ObjectOf(d);
         return t with { Store = storeIds.TryGetValue(i, out var id) ? id : -1 };
@@ -469,8 +577,13 @@ internal sealed partial class MethodWalker {
     static Slot ObjectOf(DeclaredType d) => new(Tag.Object, d.Type, d.Exact ? 1 : 0, Asm: d.Asm);
 
     void StoreLocal(int i, Slot value) {
+        // A count or a stackalloc buffer of a counted size names the store of its count in Store, which a
+        // load from this local would replace with the local's own store: kept in a local, it is only a
+        // value (a stackalloc buffer reloaded could be its own span's length, H8 review).
+        if (value.Tag is Tag.Count or Tag.Inside or Tag.DataToken or Tag.StaticRef || value is { Tag: Tag.Stackalloc, Text: not null }) value = Slot.Unknown;
         locals[i] = value with { Store = -1 };
         storeIds[i] = ++stores;
+        if (addressedLocals.Contains(i)) aliasedStores.Add(stores);
         stored[i] = Join(stored.TryGetValue(i, out var prev) ? prev : new(Tag.Null), value);
     }
 
@@ -478,38 +591,60 @@ internal sealed partial class MethodWalker {
 
     // A write through an address is only accounted for when the address is a managed one.
     void RequireAddress(Slot address, string op) {
-        if (address.Tag != Tag.Address)
+        if (address.Tag is not (Tag.Address or Tag.StaticRef))
             Note("raw-memory", $"{op} through an address that is not a managed reference in {mf.Name}", Origin.Structure);
     }
 
+    // The bytes from an address to the end of the stackalloc buffer of constant size it points into (C4):
+    // the buffer itself (localloc of a constant, the whole of it), or an address inside it. Null for
+    // anything else, a buffer of a counted or unknown size included.
+    static int? Room(Slot s) => s switch {
+        { Tag: Tag.Stackalloc, Text: null, Number: >= 0 } => s.Number,
+        { Tag: Tag.Inside } => s.Number,
+        _ => null,
+    };
+
+    // The address `offset` bytes further into a buffer with `room` bytes left: inside it while the offset is
+    // not negative and does not pass its end (an address one past the end has no room, and is not written).
+    static Slot Offset(int room, int offset) => offset >= 0 && offset <= room ? new(Tag.Inside, Number: room - offset) : Slot.Unknown;
+
     // A read through an address: a managed one, or the address of compiler-emitted static data.
     void RequireReadable(Slot address, string op) {
-        if (address.Tag is not (Tag.Address or Tag.StaticData))
+        if (address.Tag is not (Tag.Address or Tag.StaticData or Tag.StaticRef))
             Note("raw-memory", $"{op} reads through an address that is not a managed reference in {mf.Name}", Origin.Structure);
     }
 
     // A value that becomes a managed reference the method or its callee trusts (a by-reference
     // argument or local, a ref return): an address that is not a managed one would let the code
-    // that trusts it read or write any memory. Null throws where it is used.
+    // that trusts it read or write any memory. Null throws where it is used, and so does a constant 0
+    // (ldc.i4.0; conv.u: how the compiler clears a pinned local at the end of a fixed block).
     void RequireReference(Slot value, string what) {
-        if (value.Tag is not (Tag.Address or Tag.Null))
+        if (value.Tag is not (Tag.Address or Tag.StaticRef or Tag.Null) && value is not { Tag: Tag.Int, Number: 0 })
             Note("raw-memory", $"{what} is not a managed reference in {mf.Name}", Origin.Structure);
     }
 
     public void Walk(MethodBodyBlock body) {
+        initLocals = body.LocalVariablesInitialized;
+        // The types Harmony's instance is of (D7): resolved per mod with whether other code calls the method.
+        if (shape.InstanceTypes is { } instance)
+            foreach (var (type, asm) in instance) Set(mf.ReflectionStores, Nodes.Instance(mf.Key)).Add(new(type, asm, false, Bounded: true));
         ImmutableArray<string> localTypes = [];
         if (!body.LocalSignature.IsNil) {
             localTypes = md.GetStandaloneSignature(body.LocalSignature).DecodeLocalSignature(SignatureNames.Instance, null);
             if (localTypes.Any(AssemblyWalker.IsPointer)) Note("raw-memory", $"pointer local variable in {mf.Name}", Origin.Structure);
             for (int i = 0; i < localTypes.Length; i++) if (localTypes[i].EndsWith('&')) byrefLocals.Add(i);
             localDeclared = assembly.LocalDeclared(body);
+            localShapes = assembly.LocalShapes(body);
         }
         var il = body.GetILBytes() ?? [];
         var code = Il.Decode(il);
+        Il.CheckTargets(il, code, body);
         // A by-reference argument or local whose own address is taken can be overwritten through
         // that address with any value: it is not trusted to hold a managed reference.
         bool makesCollections = false;
-        foreach (var ins in code) {
+        var starts = Il.BlockStarts(il, code, body);
+        for (int k = 0; k < code.Count; k++) {
+            var ins = code[k];
             short op = ins.OpCode.Value;
             if (op == OpCodes.Starg_S.Value || op == OpCodes.Starg.Value)
                 changedArgs.Add(op == OpCodes.Starg_S.Value ? il[ins.OperandOffset] : Il.ReadUInt16(il, ins.OperandOffset));
@@ -523,7 +658,10 @@ internal sealed partial class MethodWalker {
                 if (shape.ReflectionArgs.Contains(a)) mf.UntrackedStores.Add(Nodes.Arg(mf.Key, a));
                 if (shape.PathArgs.Contains(a)) Set(mf.StringArguments, Nodes.Arg(mf.Key, a)).Add("?");
             } else if (op == OpCodes.Ldloca_S.Value || op == OpCodes.Ldloca.Value) {
-                byrefLocals.Remove(op == OpCodes.Ldloca_S.Value ? il[ins.OperandOffset] : Il.ReadUInt16(il, ins.OperandOffset));
+                int l = op == OpCodes.Ldloca_S.Value ? il[ins.OperandOffset] : Il.ReadUInt16(il, ins.OperandOffset);
+                byrefLocals.Remove(l);
+                addressedLocals.Add(l);
+                if (!ConsumedByCall(il, code, k, starts)) escapingLocals.Add(l);
             } else if (op == OpCodes.Newarr.Value || ins.OpCode.OperandType == OperandType.InlineMethod) {
                 makesCollections |= MakesCollection(Il.MemberName(md, MetadataTokens.EntityHandle(Il.Token(il, ins))), op);
             } else if (ins.OpCode.OperandType == OperandType.InlineField) {
@@ -531,7 +669,6 @@ internal sealed partial class MethodWalker {
                 makesCollections |= fh.Kind == HandleKind.FieldDefinition && assembly.FieldType(fh) is { } ft && ReflectionApis.IsReflectionArray(ft);
             }
         }
-        var starts = Il.BlockStarts(il, code, body);
         // Blocks whose entry state cannot be known in one forward pass: loop heads (targets of a
         // backward branch) and handlers. They start with nothing known.
         var fresh = Il.HandlerStarts(body);
@@ -547,9 +684,7 @@ internal sealed partial class MethodWalker {
         // (or in a later iteration) counts where an element is used.
         if (makesCollections) {
             var probe = new MethodWalker(assembly, new MethodFacts { Key = mf.Key, Name = mf.Name }, isHelper, shape, targetMethod) { summaries = summaries, localDeclared = localDeclared };
-            probe.changedArgs.UnionWith(changedArgs);
-            probe.byrefArgs.IntersectWith(byrefArgs);
-            probe.byrefLocals.UnionWith(byrefLocals);
+            Share(probe);
             probe.Pass(il, code, starts, fresh);
             final = probe.FinalCollections();
         }
@@ -559,6 +694,45 @@ internal sealed partial class MethodWalker {
         if (final != null)
             foreach (var (id, c) in collections)
                 if (c.LoadedFrom != null && final.TryGetValue(id, out var state) && (state.Tainted ?? state.Escaped) != null) mf.UntrackedStores.Add(c.LoadedFrom);
+    }
+
+    // Whether an instruction right after an address is pushed hands it to a call: constrained. (the
+    // receiver of the callvirt it prefixes) or a call with at least one argument. A call without
+    // arguments leaves the address on the stack, to be kept and written through later.
+    // Whether the address instruction code[k] pushes is popped by the call that follows it: the next
+    // instruction (a call with at least one operand, or a constrained prefix), or (C4) a call after a run of
+    // integer constants that pops them and the address too (the compiler's `ldloca; ldc.i4 k; call get_Item`),
+    // with no block start in between (control enters the call only from here, so the address on the stack
+    // is this one).
+    bool ConsumedByCall(byte[] il, List<Instruction> code, int k, HashSet<int> starts) {
+        int constants = 0;
+        for (int j = k + 1; j < code.Count; j++) {
+            var ins = code[j];
+            if (starts.Contains(ins.Offset)) return false;
+            short op = ins.OpCode.Value;
+            if (op == OpCodes.Constrained.Value) return constants == 0;
+            if (op == OpCodes.Call.Value || op == OpCodes.Callvirt.Value) {
+                try {
+                    return Il.Signature(md, MetadataTokens.EntityHandle(Il.Token(il, ins))) is { } sig
+                        && (sig.Header.IsInstance ? 1 : 0) + sig.ParameterTypes.Length >= constants + 1;
+                } catch (Exception e) when (e is BadImageFormatException or ArgumentException) {
+                    return false;
+                }
+            }
+            if ((op >= OpCodes.Ldc_I4_M1.Value && op <= OpCodes.Ldc_I4_8.Value) || op == OpCodes.Ldc_I4_S.Value || op == OpCodes.Ldc_I4.Value) { constants++; continue; }
+            return false;
+        }
+        return false;
+    }
+
+    // What the pre-scan found, for a throwaway walker over the same body (see Summaries): without the
+    // addressed locals, a summary would trust a value read from a local written through its address.
+    void Share(MethodWalker probe) {
+        probe.changedArgs.UnionWith(changedArgs);
+        probe.byrefArgs.IntersectWith(byrefArgs);
+        probe.byrefLocals.UnionWith(byrefLocals);
+        probe.addressedLocals.UnionWith(addressedLocals);
+        probe.escapingLocals.UnionWith(escapingLocals);
     }
 
     // Whether an instruction can create a collection the walker follows (see NewCollection).
@@ -576,9 +750,7 @@ internal sealed partial class MethodWalker {
         var current = new Dictionary<int, Slot>();
         for (int round = 0; round < SummaryRounds; round++) {
             var probe = new MethodWalker(assembly, new MethodFacts { Key = mf.Key, Name = mf.Name }, isHelper, shape, targetMethod) { summaries = current, optimistic = true, localDeclared = localDeclared };
-            probe.changedArgs.UnionWith(changedArgs);
-            probe.byrefArgs.IntersectWith(byrefArgs);
-            probe.byrefLocals.UnionWith(byrefLocals);
+            Share(probe);
             probe.Pass(il, code, starts, fresh);
             if (probe.stored.Count == current.Count && probe.stored.All(kv => current.TryGetValue(kv.Key, out var c) && c == kv.Value))
                 return current;
@@ -592,24 +764,45 @@ internal sealed partial class MethodWalker {
         var incoming = new Dictionary<int, Slot[]?>();
         bool fallsThrough = false;
         Slot[]? fallThrough = null;
-        foreach (var ins in code) {
+        passCode = code;
+        passIl = il;
+        for (passIndex = 0; passIndex < code.Count; passIndex++) {
+            var ins = code[passIndex];
             if (starts.Contains(ins.Offset)) {
                 var preds = new List<Slot[]?>();
                 if (fallsThrough) preds.Add(fallThrough);
                 if (incoming.TryGetValue(ins.Offset, out var branched)) preds.Add(branched);
                 // A collection on the stack into a block that starts with nothing known is lost.
-                if (fresh.Contains(ins.Offset)) foreach (var p in preds) foreach (var x in p ?? []) Lose(x, "kept on the stack into a loop");
+                if (fresh.Contains(ins.Offset)) foreach (var p in preds) foreach (var x in p ?? []) Drop(x, "kept on the stack into a loop");
                 var entry = fresh.Contains(ins.Offset) || preds.Count == 0 ? null : preds.Aggregate(Merge);
-                ClearStack();
+                // What the walker still holds goes nowhere it does not see, except a collection (or an
+                // enumerator) that the merged entry carries with the same id at the same depth (H7, "J1"):
+                // every way into this block then holds that collection there, so it is followed on. That
+                // needs every predecessor in the entry: a backward branch drops its stack (below), a
+                // handler or loop head starts with nothing, and every branch target is an instruction
+                // (CheckTargets). Before, a C# lambda cache's null test (`<>9__N ?? (<>9__N = ...)`) lost a
+                // GetMethods() array still on the stack at the join.
+                for (int si = 0; si < stack.Count; si++) {
+                    var sv = stack[si];
+                    bool carried = sv.Tag is Tag.Collection or Tag.Enumerator && entry != null && si < entry.Length
+                        && entry[si].Tag == sv.Tag && entry[si].Number == sv.Number;
+                    if (!carried) Escape(sv);
+                }
+                stack.Clear();
                 locals.Clear();
                 createdDirs.Clear();
+                // A branch can skip what was appended to a handler before it: what comes next can begin the text.
+                foreach (var text in handlers.Values) text.Started = false;
                 if (entry != null) stack.AddRange(entry);
             }
             offset = ins.Offset;
             Step(il, ins);
             var shape = stack.Select(Carried).ToArray();
             foreach (var t in Il.BranchTargets(il, ins)) {
-                if (t <= ins.Offset) continue;
+                // What a backward branch keeps on the stack reaches a block that starts with nothing
+                // known (a loop head), where code the walker sees only as unknown values can change it:
+                // dropped (H7; before, a conditional backward branch kept it, H1a-review H6).
+                if (t <= ins.Offset) { foreach (var x in stack) Drop(x, "kept on the stack into a loop"); continue; }
                 Slot[]? leave = ins.OpCode.Value is var lv && (lv == OpCodes.Leave.Value || lv == OpCodes.Leave_S.Value) ? [] : shape;
                 incoming[t] = incoming.TryGetValue(t, out var prev) ? Merge(prev, leave) : leave;
             }
@@ -633,7 +826,10 @@ internal sealed partial class MethodWalker {
 
         // writes and reads through an address
         if (StoreIndirectOps.Contains(v)) {
-            RequireAddress(Peek(1), oc.Name ?? "store");
+            // A store of a known size at a constant offset inside a stackalloc buffer of constant size, within
+            // it (the stores of a stackalloc initializer, C4): the buffer is this method's own stack memory.
+            if (!(StoreSizes.TryGetValue(v, out int stored) && Room(Peek(1)) is int room && stored <= room))
+                RequireAddress(Peek(1), oc.Name ?? "store");
             if (Peek(1) is { Tag: Tag.Address, Text: InstructionOperand }) OperandTarget(Peek(0), "a Harmony instruction's operand (through CodeMatcher.Operand)");
         } else if (LoadIndirectOps.Contains(v)) {
             RequireReadable(Peek(0), oc.Name ?? "load");
@@ -642,11 +838,20 @@ internal sealed partial class MethodWalker {
                 stack.Add(new(Tag.Unknown, InstructionOperand));
                 return;
             }
-        } else if (v == OpCodes.Cpblk.Value) {
-            RequireAddress(Peek(2), "cpblk");
-            RequireReadable(Peek(1), "cpblk");
-        } else if (v == OpCodes.Initblk.Value) {
-            RequireAddress(Peek(2), "initblk");
+        } else if (v == OpCodes.Cpblk.Value || v == OpCodes.Initblk.Value) {
+            // cpblk/initblk copy or fill a caller-chosen number of bytes from a destination address. A
+            // managed address bounds a single ldind/stind to one value of its type, but the length operand
+            // of these two is not bounded by it: a length past the destination's own size is an
+            // out-of-bounds write, even from a managed address (B review). The one shape accepted (C4,
+            // policy 34) is the C# compiler's stackalloc initializer: a constant length into a stackalloc
+            // buffer of constant size (at a constant offset) that has room for it, filled with a byte, or
+            // copied from compiler-emitted constant data (its address, or a reference into the span
+            // RuntimeHelpers.CreateSpan made over it) that has at least that many bytes. Both operands are
+            // values this method computed from constants, which no other IL can change on the stack.
+            var length = Peek(0);
+            bool fits = length is { Tag: Tag.Int, Number: >= 0 } && Room(Peek(2)) is int dest && length.Number <= dest
+                && (v == OpCodes.Initblk.Value || (Peek(1) is { Tag: Tag.StaticData or Tag.StaticRef } src && length.Number <= src.Number));
+            if (!fits) Note("raw-memory", $"{oc.Name} (copies or fills a caller-chosen number of bytes, which the destination address does not bound) in {mf.Name}", Origin.Structure);
         } else if (v == OpCodes.Initobj.Value) {
             RequireAddress(Peek(0), "initobj");
         } else if (v == OpCodes.Cpobj.Value) {
@@ -674,9 +879,12 @@ internal sealed partial class MethodWalker {
             int i = v == OpCodes.Ldloca_S.Value ? il[op] : Il.ReadUInt16(il, op);
             // A List<T>.Enumerator struct is used through its address (foreach): the local keeps it,
             // and any use of the address other than the enumerator's own members loses the collection.
-            if (Load(i).Tag == Tag.Enumerator) { stack.Add(new(Tag.Address, Number: i + 1)); return; }
+            // So is a span over constant data (CreateSpan): the local keeps it while its address is only handed to a
+            // call (see ConsumedByCall); any call but the span's indexer drops it (see Call).
+            if (Load(i).Tag is Tag.Enumerator or Tag.StaticSpan && !escapingLocals.Contains(i)) { stack.Add(new(Tag.Address, Number: i + 1)); return; }
             Escape(Load(i));
             StoreLocal(i, Slot.Unknown);  // can be written through the address
+            addresses[i] = addresses.GetValueOrDefault(i) + 1;  // see Interpolate
             stack.Add(new(Tag.Address, Number: i + 1));  // which local, for interpolated strings (see Interpolate)
             return;
         }
@@ -694,23 +902,50 @@ internal sealed partial class MethodWalker {
             // Converting a managed address to a native integer is how C# takes a raw pointer (&x).
             var x = Pop();
             if (x.Tag == Tag.Address) Note("raw-memory", $"address converted to a native pointer in {mf.Name}", Origin.Structure);
-            stack.Add(x.Tag == Tag.Int ? x : Slot.Unknown with { Store = x.Store });
+            // Only a plain value stays the value of its store (a count or a buffer would not, H8 review).
+            stack.Add(x.Tag == Tag.Int ? x : Slot.Unknown with { Store = x.Tag == Tag.Unknown ? x.Store : -1 });
             return;
         }
-        // stackalloc T[n] compiles to localloc of n * sizeof(T); the result may only feed a span of n elements
+        // The address of an element of a stackalloc buffer of constant size: the buffer (or an address inside
+        // it) plus a constant offset that stays inside it (C4). Two constants add to their sum when it fits
+        // a 32-bit integer (no wrap in 32- or 64-bit arithmetic).
+        if (v == OpCodes.Add.Value) {
+            var b = Pop();
+            var a = Pop();
+            if (b.Tag == Tag.Int && Room(a) is int room) { stack.Add(Offset(room, b.Number)); return; }
+            if (a.Tag == Tag.Int && Room(b) is int room2) { stack.Add(Offset(room2, a.Number)); return; }
+            if (a.Tag == Tag.Int && b.Tag == Tag.Int && (long)a.Number + b.Number is >= int.MinValue and <= int.MaxValue and var sum) { stack.Add(new(Tag.Int, Number: (int)sum)); return; }
+            Escape(a);
+            Escape(b);
+            stack.Add(Slot.Unknown);
+            return;
+        }
+        // stackalloc T[n] compiles to localloc of n * sizeof(T) (mul.ovf.un); the result may only feed a
+        // span of n elements. A plain mul can wrap to a small size, and a local whose address is taken
+        // can change between the size and the span's length: neither is a count. Two constants multiply
+        // to their product when it fits a 32-bit integer (the compiler's `ldc.i4 i; conv.i; ldc.i4 4; mul`
+        // for an initializer's element offset, C4).
         if (MulOps.Contains(v)) {
             var b = Pop();
             var a = Pop();
-            string? scale = b.Tag == Tag.Int ? b.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) : b.Tag == Tag.SizeOf ? "sizeof:" + b.Text : null;
-            if (scale != null && a.Tag == Tag.Unknown && a.Store >= 0) stack.Add(new(Tag.Count, scale, -1, a.Store));       // local * size
-            else if (b.Tag == Tag.SizeOf && a.Tag == Tag.Int && a.Number >= 0) stack.Add(new(Tag.Count, scale, a.Number));  // constant * sizeof(T)
+            if (a.Tag == Tag.Int && b.Tag == Tag.Int && (long)a.Number * b.Number is >= int.MinValue and <= int.MaxValue and var product) { stack.Add(new(Tag.Int, Number: (int)product)); return; }
+            string? scale = !CheckedMulOps.Contains(v) ? null
+                : b.Tag == Tag.Int ? b.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) : b.Tag == Tag.SizeOf ? "sizeof:" + b.Text : null;
+            if (scale != null && a.Tag == Tag.Unknown && a.Store >= 0 && !aliasedStores.Contains(a.Store)) stack.Add(new(Tag.Count, scale, -1, a.Store));  // local * size
+            else if (scale != null && b.Tag == Tag.SizeOf && a.Tag == Tag.Int && a.Number >= 0) stack.Add(new(Tag.Count, scale, a.Number));  // constant * sizeof(T)
             else stack.Add(Slot.Unknown);
             return;
         }
+        // stackalloc of 1-byte elements (byte, sbyte, bool) has no mul: the byte count is the element
+        // count, a local under the same rules as a count (the same store, its address never taken).
         if (v == OpCodes.Localloc.Value) {
             var n = Pop();
+            // Without localsinit the buffer holds whatever the stack held before: a span over it reads
+            // memory the method never wrote (H8 review).
+            if (!initLocals) Note("raw-memory", $"stackalloc memory that is not cleared first (no localsinit, as with [SkipLocalsInit]) in {mf.Name}", Origin.Structure);
             stack.Add(n.Tag == Tag.Int ? new(Tag.Stackalloc, Number: n.Number)
                 : n.Tag == Tag.Count ? new(Tag.Stackalloc, n.Text, n.Number, n.Store)
+                : n.Tag == Tag.Unknown && n.Store >= 0 && !aliasedStores.Contains(n.Store) ? new(Tag.Stackalloc, "1", -1, n.Store)
                 : new(Tag.Stackalloc, Number: -2));
             return;
         }
@@ -781,14 +1016,29 @@ internal sealed partial class MethodWalker {
             // game. Type tokens (typeof, casts) run no file code.
             foreach (var cap in classification.Caps)
                 Note(cap, name + "  <-  " + mf.Name, sigParams != null && policy.FileKinds.ContainsKey(cap) ? Origin.Structure : Origin.Reference);
-            External(h, name, classification);
+            External(h, name, classification, sigParams);
+            // A trusted-library member whose arguments the check traces at a direct call (the policy's
+            // "atCall" exemptions: Harmony's patching API, operand setters, ...) taken as a delegate or a
+            // method handle is called with arguments the check does not see.
+            if (sigParams != null && assembly.ExternalAssemblyOf(h) is { Length: > 0 } library && policy.CheckedAtCall(library, name))
+                mf.UnresolvedReflection.Add($"{name} is taken as a delegate or method handle, so the arguments the check traces at a call to it are not checked  <-  {mf.Name}");
             // A game method taken as a delegate (or as a method handle, which can be invoked) does
             // what the game-API map says, as a call does.
             if (oc.OperandType is OperandType.InlineMethod or OperandType.InlineTok && assembly.GameApi.TryGetValue(name, out var gameCaps))
-                foreach (var cap in gameCaps) Note(cap, $"{name} (game API, taken as a delegate or handle)  <-  {mf.Name}", Origin.GameApi);
+                foreach (var cap in gameCaps) {
+                    // The game's own XML counts where the arguments a delegate is called with could choose the type.
+                    if (cap == XmlGame && sigParams != null && assembly.Models(h, name) && ChoosesType(h, [.. sigParams], null, 0) == null) continue;
+                    Note(cap, $"{name} (game API, taken as a delegate or handle)  <-  {mf.Name}", Origin.GameApi);
+                }
             // A pointer to a method of this assembly, for a delegate (see NameFilter).
             if (ftn) {
                 stack.Add(new(Tag.Delegate, Number: MetadataTokens.GetToken(h)));
+                return;
+            }
+            // Any other method pointer (another assembly's method, a generic one, a virtual one).
+            if (v == OpCodes.Ldftn.Value || v == OpCodes.Ldvirtftn.Value) {
+                if (v == OpCodes.Ldvirtftn.Value) Escape(Pop());
+                stack.Add(new(Tag.Unknown, MethodPointer));
                 return;
             }
 
@@ -891,11 +1141,22 @@ internal sealed partial class MethodWalker {
                 stack.Add(NewCollection(c => c.Expressions = expressions));
                 return;
             }
-            if (v == OpCodes.Sizeof.Value) { stack.Add(new(Tag.SizeOf, assembly.TypeShapeName(h) ?? name)); return; }
+            if (v == OpCodes.Sizeof.Value) { stack.Add(new(Tag.SizeOf, assembly.TypeShapeName(h) ?? assembly.FrameworkTypeName(h, name))); return; }
             if (v == OpCodes.Ldsflda.Value && assembly.StaticDataSize(h) is int size) { stack.Add(new(Tag.StaticData, Number: size)); return; }
+            // The handle of compiler-emitted constant data, for RuntimeHelpers.CreateSpan (C4).
+            if (v == OpCodes.Ldtoken.Value && assembly.StaticDataSize(h) is int dataSize) { stack.Add(new(Tag.DataToken, Number: dataSize)); return; }
             if (v == OpCodes.Ldtoken.Value) {
                 bool isType = h.Kind is HandleKind.TypeReference or HandleKind.TypeDefinition or HandleKind.TypeSpecification;
                 int sep = name.IndexOf("::", StringComparison.Ordinal);
+                // A method handle can be invoked with any arguments (MethodBase.GetMethodFromHandle and
+                // Invoke, or the Expression.Call of an expression tree's lambda, compiled and called), as a
+                // delegate can (ldftn above). No lookup by name records it, so before, a method of the
+                // mod's own used only that way kept the arguments of its direct calls (H7 review).
+                if (!isType && IsMethodToken(h) && assembly.KeyOf(h) is { } handled) {
+                    mf.Callees.Add(handled);
+                    Set(mf.PathArguments, PathKey(handled, -1)).Add(PathAtoms.Untraced);
+                    mf.UntrackedStores.Add(Nodes.Arg(handled, -1));
+                }
                 // typeof(T) of a generic parameter is whatever type the caller picks: not traced.
                 // A method or field handle names its member, and with it the declaring type.
                 stack.Add(isType ? (assembly.IsGenericParameter(h) ? Slot.Unknown : new(Tag.Type, name, Asm: assembly.TypeAssembly(h)))
@@ -919,8 +1180,11 @@ internal sealed partial class MethodWalker {
         for (int i = 0; i < StackEffect.Pushes(oc.StackBehaviourPush); i++) stack.Add(Slot.Unknown);
     }
 
+    // The instance Harmony passes to a patch method is of the types its node holds, unless the method stores another
+    // value there (D7).
     Slot Arg(int i) => byrefArgs.Contains(i) ? new(Tag.Address)
         : shape.ByrefArgs.Contains(i) ? Slot.Unknown  // its address is taken somewhere: not trusted
+        : i == shape.InstanceArg && shape.InstanceTypes != null && !changedArgs.Contains(i) ? new(Tag.Value, Nodes.Instance(mf.Key))
         : shape.PathArgs.Contains(i) ? PathSlot([PathAtoms.Argument(mf.Key, i)])
         // A Type or member argument is what every call passes (resolved per mod, see Nodes).
         : shape.ReflectionArgs.Contains(i) ? new(Tag.Node, Nodes.Arg(mf.Key, i))
@@ -935,6 +1199,13 @@ internal sealed partial class MethodWalker {
 
     static string PathKey(string methodKey, int index) => index < 0 ? methodKey + "#*" : $"{methodKey}#{index}";
 
+    // Whether a token names a method (not a field: ldtoken of a field also initializes arrays).
+    bool IsMethodToken(EntityHandle h) => h.Kind switch {
+        HandleKind.MethodDefinition or HandleKind.MethodSpecification => true,
+        HandleKind.MemberReference => md.GetMemberReference((MemberReferenceHandle)h).GetKind() == MemberReferenceKind.Method,
+        _ => false,
+    };
+
     // starg: a by-reference argument must keep holding a managed reference; a path argument also
     // comes from what is stored to it, recorded as a call to this method.
     void StoreArg(int i, Slot value) {
@@ -948,39 +1219,58 @@ internal sealed partial class MethodWalker {
     // stloc: a by-reference local is trusted to hold a managed reference wherever it is loaded.
     void Stloc(int i, Slot value) {
         if (byrefLocals.Contains(i)) RequireReference(value, $"a value stored to by-reference local {i}");
+        // A collection or start info stored to a local whose address is taken can be changed through
+        // that address (an enumerator only when an address of it is not handed straight to a call).
+        if (addressedLocals.Contains(i) && (value.Tag != Tag.Enumerator || escapingLocals.Contains(i))) Escape(value);
         // A by-reference local holding an operand's address is written through where the check does not look.
         if (value is { Tag: Tag.Address, Text: InstructionOperand })
             mf.UnresolvedReflection.Add($"the address of a Harmony instruction's operand is kept in a local, through which anything can be stored  <-  {mf.Name}");
-        if (value is { Tag: Tag.Unknown, Text: InterpolationHandler }) handlers[i] = new();
+        if (value is { Tag: Tag.Unknown, Text: InterpolationHandler }) handlers[i] = new() { Open = value.Number != 0 };
         StoreLocal(i, value);
     }
 
     // Pointer types in a referenced member's signature hand out or take raw addresses. The one
     // exception is a span over a stackalloc buffer or compiler-emitted static data, with a
-    // length that fits it, which is what the compiler emits for safe code.
-    bool PointerSignatureAccountedFor(EntityHandle h, string name, ImmutableArray<string> ps, Slot[] args) {
+    // length that fits it, which is what the compiler emits for safe code: newobj, or a call on
+    // the address of a local of exactly that span type (constructed in place). `self` is 1 for the
+    // call, whose receiver is args[0].
+    bool PointerSignatureAccountedFor(EntityHandle h, string name, ImmutableArray<string> ps, Slot[] args, int self) {
         if (!SpanPointerCtors.Contains(name) || ps.Length != 2 || ps[0] != "System.Void*" || ps[1] != "System.Int32") return false;
-        if (args.Length < 2 || assembly.SpanElementType(h) is not { } element) return false;
-        var buffer = args[0];
-        var length = args[1];
-        int? elementSize = PrimitiveSizes.TryGetValue(element, out var sz) ? sz : null;
+        if (args.Length != 2 + self || assembly.SpanElementType(h) is not { } element) return false;
+        // The constructor writes a span into its receiver: anything but a local of that type (another
+        // type's location, a made-up address) would be written over or read back as another type.
+        if (self == 1 && !(args[0] is { Tag: Tag.Address, Text: null, Number: > 0 } receiver
+            && receiver.Number - 1 < localShapes.Length && assembly.ParentShape(h) is { } span && SameType(localShapes[receiver.Number - 1], span)))
+            return false;
+        var buffer = args[self];
+        var length = args[self + 1];
+        // The element's size where the runtime fixes it: a primitive, or an enum of this assembly or of
+        // the framework, laid out as its one instance field (C1, policy 34).
+        int? elementSize = assembly.SpanElementSize(h);
         if (buffer.Tag == Tag.StaticData || (buffer.Tag == Tag.Stackalloc && buffer.Text == null && buffer.Number >= 0))
             return length.Tag == Tag.Int && elementSize is int es && length.Number >= 0 && (long)length.Number * es <= buffer.Number;
         if (buffer.Tag != Tag.Stackalloc || buffer.Text == null) return false;
         bool sameElement = buffer.Text == "sizeof:" + element
             || (elementSize is int es2 && buffer.Text == es2.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (!sameElement) return false;
+        // The length is the count's own value: a load of the same store, not a count, a buffer or a
+        // product made from it (H8 review).
         return buffer.Store >= 0
-            ? length.Store == buffer.Store
+            ? length.Tag == Tag.Unknown && length.Store == buffer.Store
             : length.Tag == Tag.Int && length.Number >= 0 && length.Number <= buffer.Number;
     }
+
+    // Two signature types are the same type: same names, same definition rows, same arguments.
+    static bool SameType(TypeShape a, TypeShape b) =>
+        a.Name == b.Name && a.Definition == b.Definition && a.Args.IsDefaultOrEmpty == b.Args.IsDefaultOrEmpty
+        && (a.Args.IsDefaultOrEmpty || (a.Args.Length == b.Args.Length && a.Args.Zip(b.Args).All(p => SameType(p.First, p.Second))));
 
     void Call(EntityHandle h, string name, bool isNewobj) {
         if (assembly.KeyOf(h) is { } key) mf.Callees.Add(key);
         if (Il.Signature(md, h) is not { } sig) {
             var unknown = policy.Classify(name);
             foreach (var cap in unknown.Caps) Note(cap, name + "  <-  " + mf.Name);
-            External(h, name, unknown);
+            External(h, name, unknown, null);
             ClearStack();
             stack.Add(Slot.Unknown);  // unknown arity: drop all tracking
             return;
@@ -991,16 +1281,32 @@ internal sealed partial class MethodWalker {
         for (int i = args.Length - 1; i >= 0; i--) args[i] = Pop();
 
         var classification = policy.Classify(name, ps);
-        External(h, name, classification);
+        External(h, name, classification, ps);
         var caps = classification.Caps.ToList();
+        // A delegate made from a native int that no ldftn or ldvirtftn in this method produced calls whatever
+        // code address it is given (H8 review, H9): native code, as calli is.
+        if (ps is ["System.Object", "System.IntPtr"] && name.EndsWith("::.ctor", StringComparison.Ordinal) && assembly.MayBeDelegateConstructor(h, name)
+            && args[self + 1] is not ({ Tag: Tag.Delegate } or { Tag: Tag.Unknown, Text: MethodPointer }))
+            Note("native-code", $"{name} (a delegate) is given a native int that is not a method pointer taken here, so it calls whatever address that is  <-  {mf.Name}", Origin.Structure);
         // The semantics modelled below for framework and Harmony members, which narrow what a call
         // counts as, hold only for those members themselves, not for a type that is only named like
         // one (see AssemblyWalker.Models): that is ordinary code, or code that was not analyzed.
         bool modelled = assembly.Models(h, name);
         if (h.Kind != HandleKind.MethodDefinition && (AssemblyWalker.IsPointer(sig.ReturnType) || ps.Any(AssemblyWalker.IsPointer))
-            && !(modelled && PointerSignatureAccountedFor(h, name, ps, args)))
+            && !(modelled && PointerSignatureAccountedFor(h, name, ps, args, self)))
             Note("raw-memory", $"pointer type in the signature of {name}  <-  {mf.Name}", Origin.Structure);
         if (isHelper) caps.Remove("raw-memory");
+        // MemoryMarshal.AsBytes/Cast/Read/Write (and the Try forms) with every type argument plain data (C2,
+        // policy 34): see MemoryMarshalReinterpretations. Any other MemoryMarshal member, or a type argument
+        // the check cannot lay out (a generic parameter, a struct with a reference), stays raw memory.
+        if (modelled && MemoryMarshalReinterpretations.Contains(name) && ps.All(p => p is "System.Span`1" or "System.ReadOnlySpan`1" || p.EndsWith('&'))
+            && assembly.TypeArgumentsArePlain(h))
+            caps.Remove("raw-memory");
+        // A span over constant data kept in a local (see Ldloca) handed to anything but its indexer may be
+        // replaced through its address: the local no longer holds it.
+        bool indexer = modelled && SpanIndexers.Contains(name) && self == 1 && ps is ["System.Int32"];
+        foreach (var a in args)
+            if (a is { Tag: Tag.Address, Number: > 0 } && LocalValue(a.Number - 1).Tag == Tag.StaticSpan && !(indexer && a.Equals(args[0]))) StoreLocal(a.Number - 1, Slot.Unknown);
         if (h.Kind == HandleKind.MethodSpecification) {
             var target = md.GetMethodSpecification((MethodSpecificationHandle)h).Method;
             if (target.Kind == HandleKind.MethodDefinition && assembly.IsCompilerHelper((MethodDefinitionHandle)target)) {
@@ -1045,13 +1351,26 @@ internal sealed partial class MethodWalker {
         for (int i = 0; i < ps.Length; i++)
             if (ps[i].EndsWith('&') && !isHelper) RequireReference(args[i + self], $"by-reference argument {i} of {name}");
 
+        // An XmlSerializer for a type this code does not fix (typeof(T), a Type it is given, a run-time
+        // type) fills whatever type its caller or the run time chooses (see the policy's game.exempt).
+        if (modelled && caps.Remove("xml-serialization")) {
+            int ti = ps.IndexOf("System.Type");
+            var t = ti >= 0 ? args[ti + self] : Slot.Unknown;
+            caps.Add(t is { Tag: Tag.Type, Text: { } fixedType } && (t.Number & Slot.OrDerived) == 0 && !fixedType.StartsWith('!') ? "xml-serialization" : "xml-serialization-open");
+        }
         HashSet<string>? opPath = null;
         foreach (var cap in caps) {
             Note(cap, name + "  <-  " + mf.Name);
             if (policy.FileKinds.TryGetValue(cap, out var kind)) mf.FileOps.Add(new(kind, name, opPath ??= OperationPath(name, ps, args, self), policy.MayBeUrl(name, ps)));
         }
         if (assembly.GameApi.TryGetValue(name, out var gameCaps))
-            foreach (var cap in gameCaps) Note(cap, $"{name} (game API)  <-  {mf.Name}", Origin.GameApi);
+            foreach (var cap in gameCaps) {
+                // The game's own XML (see the policy's game.exempt) counts only where this call lets the
+                // mod choose the type it fills (see ChoosesType).
+                string? chosen = null;
+                if (cap == XmlGame && modelled && (chosen = ChoosesType(h, ps, args, self)) == null) continue;
+                Note(cap, $"{name} (game API{(chosen != null ? $", XmlSerializer for a type the call chooses: {chosen}" : "")})  <-  {mf.Name}", Origin.GameApi);
+            }
         RecordPathArguments(h, sig, args, self);
         RecordReflectionArguments(h, sig, args, self);
 
@@ -1063,7 +1382,7 @@ internal sealed partial class MethodWalker {
             // Every collection passed elsewhere can be changed there; an expression factory only
             // reads the expressions it is given.
             foreach (var a in args)
-                if (!(expression && a.Tag == Tag.Collection && collections.TryGetValue(a.Number, out var ec) && ec.Expressions)) Lose(a, $"passed to {name}");
+                if (!(expression && a.Tag == Tag.Collection && collections.TryGetValue(a.Number, out var ec) && ec.Expressions)) Hand(a, h, name);
             int before = mf.UnresolvedReflection.Count;
             result = TrackStartInfo(name, modelled, isNewobj, ps, args)
                 ?? (modelled ? Interpolate(h, name, ps, args, self) ?? Reflect(h, name, sig, args, self) : Slot.Unknown);
@@ -1071,8 +1390,9 @@ internal sealed partial class MethodWalker {
             if (expression && cleanArgs && mf.UnresolvedReflection.Count == before && ReflectionApis.IsCleanExpressionFactory(name)) result = new(Tag.Expr);
         }
         var r = result.Value;
-        // A delegate made from a method pointer is a delegate to that method.
-        if (isNewobj && ps is ["System.Object", "System.IntPtr"] && args[1].Tag == Tag.Delegate) r = args[1] with { Store = -1 };
+        // A delegate made from a method pointer is a delegate to that method (a delegate type's constructor,
+        // not any constructor of that shape, G4).
+        if (isNewobj && ps is ["System.Object", "System.IntPtr"] && args[1].Tag == Tag.Delegate && assembly.IsDelegateConstructor(h, name)) r = args[1] with { Store = -1 };
         // A getter that returns a Type or member field unchanged yields that field's value.
         if (r.Tag == Tag.Unknown && !isNewobj && assembly.GetterField(h) is { } getter) r = new(Tag.Node, Nodes.Field(getter));
         // A Type or member returned by a method of the mod is what that method returns (resolved per mod).
@@ -1080,9 +1400,17 @@ internal sealed partial class MethodWalker {
         if (r.Tag == Tag.Unknown && !isNewobj && ReflectionApis.IsReflectionType(sig.ReturnType) && assembly.KeyOf(h) is { } returns && !IsFramework(h)
             && !name.StartsWith("HarmonyLib.", StringComparison.Ordinal))
             r = new(Tag.Node, Nodes.Return(returns));
+        // RuntimeHelpers.CreateSpan over compiler-emitted constant data is a span of that many bytes (C4).
+        if (modelled && name == CreateSpan && args.Length == 1 && args[0].Tag == Tag.DataToken) r = new(Tag.StaticSpan, Number: args[0].Number);
         // A ref return is a managed reference; the one to the operand of the instruction a CodeMatcher
         // is at is an operand's address (what is stored through it is an operand).
         if (sig.ReturnType.EndsWith('&')) r = name == "HarmonyLib.CodeMatcher::get_Operand" ? new(Tag.Address, InstructionOperand) : new(Tag.Address);
+        // The indexer of a span over constant data, at a constant index: a reference into the data with the
+        // bytes from that element to its end (the indexer throws past the span's length; the element size is
+        // the runtime's, see SpanElementSize) (C4).
+        if (indexer && args[0] is { Tag: Tag.Address, Number: > 0 } at && LocalValue(at.Number - 1) is { Tag: Tag.StaticSpan } span
+            && args[1] is { Tag: Tag.Int, Number: >= 0 } index && assembly.SpanElementSize(h) is int es && (long)index.Number * es <= span.Number)
+            r = new(Tag.StaticRef, Number: span.Number - (index.Number * es));
         else if (r.Tag == Tag.Unknown) r = PathResult(h, name, sig, args, self, isNewobj, modelled) ?? r;
         // Anything else is an object of the type the method declares it returns (a new object: exactly of its type).
         if (r is { Tag: Tag.Unknown, Text: null }) {
@@ -1095,9 +1423,32 @@ internal sealed partial class MethodWalker {
         if (isNewobj || sig.ReturnType != "System.Void") stack.Add(r);
     }
 
+    const string XmlGame = "xml-serialization-game";
+
+    // Why a call to a game member lets the mod choose the type of what the game's XmlSerializer fills,
+    // or null when it gives the member only the game's own types and plain values: a type argument that
+    // is not the game's (a mod or framework type, a generic parameter, an array), or a Type, object,
+    // generic or Type[]/object[] argument that is not null, a constant, a string or a game type.
+    // (args null: a delegate, called with arguments the check does not see.)
+    string? ChoosesType(EntityHandle h, ImmutableArray<string> ps, Slot[]? args, int self) {
+        foreach (var (t, a) in assembly.CallTypeArguments(h))
+            if (!assembly.IsGameAssembly(a)) return $"type argument {t}";
+        for (int i = 0; i < ps.Length; i++) {
+            if (ps[i] is not ("System.Type" or "System.Object" or "System.Type[]" or "System.Object[]") && !ps[i].StartsWith('!')) continue;
+            if (args == null) return $"a {ps[i]} argument";
+            var v = args[i + self];
+            if (v.Tag is Tag.Null or Tag.Int or Tag.String) continue;
+            if (v.Tag == Tag.Path && (v.Number & Slot.NotOnlyText) == 0) continue;
+            if (v is { Tag: Tag.Type, Text: { } gt } && (v.Number & Slot.OrDerived) == 0 && !gt.StartsWith('!') && assembly.IsGameAssembly(v.Asm)) continue;
+            return $"argument {i} ({ps[i]})";
+        }
+        return null;
+    }
+
     // Framework assemblies are never analyzed with a mod: what their members return or are given is not resolved.
-    bool IsFramework(EntityHandle h) => assembly.ExternalAssemblyOf(h) is { } a
-        && (a.StartsWith("System", StringComparison.Ordinal) || a.StartsWith("Microsoft", StringComparison.Ordinal) || a is "mscorlib" or "netstandard");
+    // The framework is its assemblies (as in AssemblyWalker.Models), not any name beginning "System": one of
+    // the mod's own assemblies may be named so, and what its methods are given must be recorded (G4).
+    bool IsFramework(EntityHandle h) => assembly.IsFrameworkAssembly(assembly.ExternalAssemblyOf(h));
 
     // The Type and member arguments of a call into code that may be analyzed with the mod: what each
     // of those parameters is given (see Nodes). Numbered as in RecordPathArguments.
@@ -1109,8 +1460,10 @@ internal sealed partial class MethodWalker {
         int numbered = sig.Header.IsInstance ? 1 : 0;
         for (int i = 0; i < ps.Length; i++) {
             if (ReflectionApis.IsReflectionType(ps[i])) StoreNode(Nodes.Arg(key, i + numbered), args[i + self]);
-            // A string given to a method of this assembly may name a member it looks up (see NameParameter).
-            else if (ps[i] == "System.String" && h.Kind is HandleKind.MethodDefinition or HandleKind.MethodSpecification)
+            // A string given to a method that may be analyzed with the mod may name a member it looks up
+            // (see NameParameter): whatever the token is (a method of this assembly's generic type is a
+            // member reference, as is one of the mod's other assemblies).
+            else if (ps[i] == "System.String")
                 Set(mf.StringArguments, Nodes.Arg(key, i + numbered)).Add(StringValue(args[i + self]));
         }
     }
@@ -1215,11 +1568,17 @@ internal sealed partial class MethodWalker {
                     or "RemoveRange" or "Clear" or "Reverse":
                     return Slot.Unknown;
             }
-            Lose(receiver, $"passed to {name}");
+            // Any other member can change it, and the others it is given (CopyTo, SetValue, ...).
+            foreach (var a in args) Hand(a, h, name);
             return Slot.Unknown;
         }
         // LINQ never changes its source: elements and sequences of it are its elements.
         if (type == "System.Linq.Enumerable" && self == 0) {
+            // A default value (FirstOrDefault(source, value), DefaultIfEmpty(source, value), ...) is what
+            // the result is when no element is: it is one of the values the result can be, as an element is.
+            if (member is "FirstOrDefault" or "SingleOrDefault" or "LastOrDefault" or "DefaultIfEmpty")
+                for (int i = 1; i < ps.Length; i++)
+                    if (ps[i] == "!!0") AddTo(id, args[i]);
             // A filter that requires a constant member name: the element it gives is a member of that name.
             string? named = args.Length == 2 && member is "First" or "FirstOrDefault" or "Single" or "SingleOrDefault" or "Last" or "LastOrDefault"
                 or "Any" or "All" or "Count" or "LongCount" ? NameFilter(args[1]) : null;
@@ -1271,55 +1630,117 @@ internal sealed partial class MethodWalker {
     // Interpolated strings ($"{dir}/{name:x}.cfg") build their text in a handler local: the path atoms
     // of what is appended to it, per local, from its constructor to ToStringAndClear.
     sealed class Interpolation {
-        public readonly List<string> Atoms = [];
-        public List<string> Last = [];  // the atoms of the part appended last, which ends the text so far
-        public bool Started;  // something was appended: what follows is a fragment, not the start of the path
-
-        // A new part ends the text: the one before it is followed by more.
-        public void Append(IEnumerable<string> part) {
-            Atoms.AddRange(PathAtoms.Mid(Last));
-            Last = [.. part];
-        }
+        // Each part appended, in order: its atoms (as the part that ends the text so far), its text when
+        // the walker knows it, and whether it is a value whose text has a letter or digit and no
+        // separator (see PathAtoms.Splits).
+        public readonly List<(List<string> Atoms, string? Text, bool Inert)> Parts = [];
+        public readonly List<string> Formats = [];  // the atoms of format strings: fragments of the text
+        public bool Started;  // something was appended on the way here: what follows is a fragment, not the start of the path
+        // The text can be other than what was appended: every value is formatted by a provider of the
+        // caller's choosing, or the handler's address was used for more than its own members.
+        public bool Open;
     }
     readonly Dictionary<int, Interpolation> handlers = [];
+    // Per local, the addresses taken of it (ldloca) that no handler member has used yet (see Interpolate).
+    readonly Dictionary<int, int> addresses = [];
     const string InterpolationHandler = "System.Runtime.CompilerServices.DefaultInterpolatedStringHandler";
+
+    // Values whose text has a digit or letter and no separator or dot of its own, whatever their value
+    // (formatted without a format, or with a standard one such as "D4" or "N"): integers, booleans,
+    // GUIDs. A char can be "." or "/", and other types have their own ToString (see README, Known gaps,
+    // for a culture whose number format the mod changes).
+    static readonly HashSet<string> InertFormatted = [
+        "System.Boolean", "System.Byte", "System.SByte", "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
+        "System.Int64", "System.UInt64", "System.IntPtr", "System.UIntPtr", "System.Int128", "System.UInt128", "System.Guid",
+    ];
+    [GeneratedRegex(@"^[A-Za-z][0-9]{0,3}$")]
+    private static partial Regex StandardFormat();
 
     Slot? Interpolate(EntityHandle h, string name, ImmutableArray<string> ps, Slot[] args, int self) {
         if (DeclaringType(name) != InterpolationHandler) return null;
-        // new DefaultInterpolatedStringHandler(...) stored to a local starts that local's text (see Stloc).
-        if (self == 0) return name.EndsWith("::.ctor", StringComparison.Ordinal) ? new(Tag.Unknown, InterpolationHandler) : null;
+        // new DefaultInterpolatedStringHandler(...) stored to a local starts that local's text (see Stloc);
+        // given a format provider, every value it formats can come out as any text (ICustomFormatter).
+        if (self == 0) return name.EndsWith("::.ctor", StringComparison.Ordinal) ? new(Tag.Unknown, InterpolationHandler, FormatsThrough(ps, args, 0) ? 1 : 0) : null;
         // Silence on purpose: a handler the walker cannot place (not a local's address) yields an
         // untraced string at ToStringAndClear, through its result (see PathResult).
         if (args[0] is not { Tag: Tag.Address, Number: > 0 } receiver) return null;
         int local = receiver.Number - 1;
         string member = name[(InterpolationHandler.Length + 2)..];
-        if (member == ".ctor") { handlers[local] = new(); return null; }
+        // Every address of the local should be used by one of its handler's members. One that is not
+        // (passed to a method, kept in a by-reference local, joined with another local's) can append to
+        // or clear the handler where the walker does not look.
+        int pending = addresses.GetValueOrDefault(local) - 1;
+        addresses[local] = Math.Max(0, pending);
+        bool aliased = pending > 0;
+        if (member == ".ctor") { handlers[local] = new() { Open = FormatsThrough(ps, args, 1) || aliased }; return null; }
         if (!handlers.TryGetValue(local, out var text)) return null;
-        if (member is "ToStringAndClear" or "ToString") return PathSlot(PathAtoms.Combine(text.Atoms.Concat(text.Last)));
-        if (member is not ("AppendLiteral" or "AppendFormatted")) return null;
+        text.Open |= aliased;
+        if (member is "ToStringAndClear" or "ToString") {
+            var result = PathSlot(PathAtoms.Combine(TextAtoms(text)));
+            // ToStringAndClear empties the handler: what is appended next begins a new text. (The old parts
+            // stay: where a branch skips the clear, the new text follows them.)
+            if (member == "ToStringAndClear") text.Started = false;
+            return result;
+        }
+        if (member is not ("AppendLiteral" or "AppendFormatted") || ps.Length == 0) { text.Open = true; return null; }
         // What is appended: a string or path value, or a value of the type argument (a number or
-        // date adds no path of its own); a format string adds only what a literal fragment adds.
-        var targs = assembly.MethodTypeArguments(h);
-        for (int i = 0; i < ps.Length; i++) {
-            var a = args[i + 1];
-            if (i > 0) {
-                // A format: its text is part of the value's ("F2" adds a dot); the alignment adds nothing.
-                if (ps[i] == "System.String") {
-                    text.Atoms.AddRange(PathAtoms.Mid(Atoms(a, false)));
-                    if (a.Tag != Tag.Null) text.Last.Add(PathAtoms.End);
-                }
-                continue;
-            }
-            bool pathish = a.Tag is Tag.Path or Tag.String or Tag.Null
-                || ps[0] is "System.String" or "System.Object" or "System.ReadOnlySpan`1"
-                || (ps[0] == "!!0" && targs.Length == 1 && (PathAtoms.IsPathType(targs[0]) || targs[0] is "System.Object" || targs[0].StartsWith('!')));
-            if (pathish) text.Append(PartAtoms(a, !text.Started, !text.Started, true));
-            // A value of another type (the name of an enum value, a number): it adds no path, but the text
-            // can begin (end) with it, and what follows can make it a web address (a name with a dot).
-            else text.Append(text.Started ? [PathAtoms.End] : [PathAtoms.Head, PathAtoms.End]);
+        // boolean adds no path of its own); a format string adds only what a literal fragment adds.
+        // A type argument named like a framework type (System.Guid) that is not one has its own ToString (G4).
+        var targ = assembly.FormattedTypeArgument(h);
+        var a = args[1];
+        string type = ps[0] == "!!0" && targ != null ? targ : ps[0];
+        int fi = ps.Length > 1 && ps[^1] == "System.String" ? ps.Length - 1 : -1;
+        var format = fi > 0 ? args[fi + 1] : new(Tag.Null);
+        // A constant character, formatted with no format, is its own text.
+        if (type == "System.Char" && a.Tag == Tag.Int && format.Tag == Tag.Null) a = new(Tag.String, ((char)a.Number).ToString());
+        bool start = !text.Started;
+        bool pathish = a.Tag is Tag.Path or Tag.String or Tag.Null
+            || type is "System.String" or "System.Object" or "System.ReadOnlySpan`1" || PathAtoms.IsPathType(type) || type.StartsWith('!');
+        if (pathish) text.Parts.Add(([.. PartAtoms(a, start, start, true)], a.Tag == Tag.String ? a.Text ?? "" : a.Tag == Tag.Null ? "" : null, false));
+        // A number or boolean adds no path, but the text can begin (end) with it, and what follows can make
+        // it a web address (a name with a dot).
+        else if ((InertFormatted.Contains(type) || assembly.IsOwnEnum(h)) && (format.Tag == Tag.Null || format is { Tag: Tag.String, Text: { } f } && StandardFormat().IsMatch(f)))
+            text.Parts.Add((start ? [PathAtoms.Head, PathAtoms.End] : [PathAtoms.End], null, true));
+        // Anything else is text its own ToString (or a character, or a custom format) makes: any text.
+        else text.Parts.Add((start ? [PathAtoms.Untraced, PathAtoms.Head, PathAtoms.End] : [PathAtoms.Untraced, PathAtoms.End], null, false));
+        // An alignment pads the text with spaces: a path that no longer begins (ends) where it did.
+        int ai = ps.IndexOf("System.Int32");
+        if (ai > 0 && pathish && args[ai + 1] is not { Tag: Tag.Int, Number: 0 }) text.Parts[^1].Atoms.AddRange([PathAtoms.Untraced, PathAtoms.End]);
+        // A format's text is part of the value's ("F2" adds a dot).
+        if (fi > 0) {
+            text.Formats.AddRange(PathAtoms.Mid(Atoms(format, false)));
+            if (format.Tag != Tag.Null) text.Parts[^1].Atoms.Add(PathAtoms.End);
         }
         text.Started = true;
         return null;
+    }
+
+    // Whether a handler constructor is given a format provider (one that is not null).
+    static bool FormatsThrough(ImmutableArray<string> ps, Slot[] args, int self) {
+        int i = ps.IndexOf("System.IFormatProvider");
+        return i >= 0 && args[i + self].Tag != Tag.Null;
+    }
+
+    // The atoms of a handler's text: each part (all but the last followed by more), its formats, and
+    // untraced when the parts joined can make a ".." segment or the text can be other than its parts.
+    List<string> TextAtoms(Interpolation text) {
+        var atoms = new List<string>(text.Formats);
+        var parts = text.Parts;
+        for (int i = 0; i < parts.Count; i++) {
+            IEnumerable<string> part = parts[i].Atoms;
+            if (i < parts.Count - 1 && PathAtoms.MayBeDocumentsFolder(part) && GameFolderFollows(parts.Skip(i + 1).Select(p => p.Text), "")) part = PathAtoms.Gamed(part);
+            atoms.AddRange(i < parts.Count - 1 ? PathAtoms.Mid(part) : part);
+        }
+        if (text.Open) atoms.AddRange([PathAtoms.Untraced, PathAtoms.Head, PathAtoms.End]);
+        else if (PathAtoms.Splits([.. parts.Select(p => p.Text)], [.. parts.Select(p => p.Inert)])) atoms.Add(PathAtoms.Untraced);
+        return atoms;
+    }
+
+    // Whether the known texts that follow a value (up to the first that is not known), joined with
+    // joiner and after it, name the game's folder inside Documents (the policy's "gameFolder").
+    bool GameFolderFollows(IEnumerable<string?> texts, string joiner) {
+        var known = texts.TakeWhile(t => t != null).ToList();
+        return known.Count > 0 && policy.GameFolder.IsMatch(joiner + string.Join(joiner, known));
     }
 
     // Path APIs whose operands can each be a rooted path that replaces what came before.
@@ -1348,6 +1769,15 @@ internal sealed partial class MethodWalker {
         "System.IO.Directory::GetDirectoryRoot",
         "System.Collections.Generic.IEnumerable`1::GetEnumerator", "System.Collections.Generic.IEnumerator`1::get_Current",
         "System.Collections.IEnumerable::GetEnumerator", "System.Collections.IEnumerator::get_Current",
+    ];
+    // Members among the combiners whose result, given one value, is that value (the Documents folder
+    // itself stays itself; see PathAtoms.DocumentsFolder).
+    static readonly HashSet<string> FolderCopies = [
+        "System.IO.Path::Combine", "System.IO.Path::Join", "System.IO.Path::GetFullPath", "System.IO.Path::TrimEndingDirectorySeparator",
+        "System.String::Concat", "System.String::ToString", "System.String::Copy", "System.String::Intern",
+        "System.IO.FileInfo::.ctor", "System.IO.DirectoryInfo::.ctor", "System.IO.Directory::CreateDirectory",
+        "System.IO.FileSystemInfo::get_FullName", "System.IO.FileInfo::get_FullName", "System.IO.DirectoryInfo::get_FullName",
+        "System.IO.FileSystemInfo::ToString",
     ];
     // Members among the combiners whose result does not keep the end of the path they are given.
     static readonly HashSet<string> NotSuffixPreserving = [
@@ -1412,8 +1842,7 @@ internal sealed partial class MethodWalker {
     void RecordPathArguments(EntityHandle h, MethodSignature<string> sig, Slot[] args, int self) {
         if (assembly.KeyOf(h) is not { } key) return;  // no node: nothing can look the arguments up
         // Silence on purpose: framework methods are never analyzed, so their arguments are not needed.
-        if (assembly.ExternalAssemblyOf(h) is { } a && (a.StartsWith("System", StringComparison.Ordinal) || a.StartsWith("Microsoft", StringComparison.Ordinal)
-            || a is "mscorlib" or "netstandard")) return;
+        if (IsFramework(h)) return;
         var ps = sig.ParameterTypes;
         int numbered = sig.Header.IsInstance ? 1 : 0;
         for (int i = 0; i < ps.Length; i++)
@@ -1427,7 +1856,7 @@ internal sealed partial class MethodWalker {
         if (!modelled) return Returned(h, name, sig, isNewobj);
         if (policy.PathSources.TryGetValue(name, out var origin)) {
             if (origin == "special-folder")
-                origin = args.Length > 0 && args[0].Tag == Tag.Int && args[0].Number == policy.DocumentsFolder ? "documents" : "user-folder";
+                origin = args.Length > 0 && args[0].Tag == Tag.Int && args[0].Number == policy.DocumentsFolder ? PathAtoms.DocumentsFolder : "user-folder";
             // A folder the game or the user names (the game's folder can be inside a macOS ".app"); an
             // environment variable can hold anything, a web address included.
             return PathSlot(origin == "environment" ? [origin, PathAtoms.Head, PathAtoms.End] : [origin, PathAtoms.End]);
@@ -1442,22 +1871,66 @@ internal sealed partial class MethodWalker {
             var parts = new List<string>();
             var operands = Enumerable.Range(0, args.Length)
                 .Where(i => args[i].Tag is Tag.Path or Tag.String or Tag.Null || !NonPathOperands.Contains(i < self ? DeclaringType(name) : ps[i - self])).ToList();
+            // Joined end to end, operands can make a ".." segment that none of them holds alone (joined
+            // with separators, by Path.Combine and Path.Join, they cannot).
+            bool concat = name == "System.String::Concat", separated = name is "System.IO.Path::Combine" or "System.IO.Path::Join";
+            string? Known(int i) => args[i].Tag == Tag.String ? args[i].Text ?? "" : args[i].Tag == Tag.Null ? "" : null;
+            if (concat && PathAtoms.Splits([.. operands.Select(Known)], [.. operands.Select(_ => false)])) parts.Add(PathAtoms.Untraced);
             // The first operand begins the result and the last ends it; a later rooted Path.Combine
             // operand replaces what came before, but a rooted path is never a web address.
-            foreach (var i in operands)
-                parts.AddRange(PartAtoms(args[i], rooting || i == operands[0], i == operands[0], i == operands[^1]));
+            for (int k = 0; k < operands.Count; k++) {
+                var s = args[operands[k]];
+                // The Documents folder itself followed directly by the game's folder names is the game's
+                // folder (a rooted Path.Combine operand would replace both).
+                if ((concat || separated) && k < operands.Count - 1 && s.Tag == Tag.Path && PathAtoms.MayBeDocumentsFolder(PathAtoms.Decode(s.Text))
+                    && GameFolderFollows(operands.Skip(k + 1).Select(j => name == "System.IO.Path::Combine" && args[j].Tag == Tag.String && policy.AbsolutePathLiteral.IsMatch(args[j].Text ?? "") ? null : Known(j)), concat ? "" : "/"))
+                    s = PathSlot(PathAtoms.Gamed(PathAtoms.Decode(s.Text)));
+                int i = operands[k];
+                parts.AddRange(PartAtoms(s, rooting || i == operands[0], i == operands[0], i == operands[^1]));
+            }
             // An edit that can drop the beginning or the end of a path (a name taken out of it, a
             // replacement, a parent folder): the result can begin or end with anything.
             if (NotPrefixPreserving.Contains(name)) parts.Add(PathAtoms.Head);
             if (NotSuffixPreserving.Contains(name)) parts.Add(PathAtoms.End);
-            return PathSlot(operands.Count > 0 ? PathAtoms.Combine(parts) : [PathAtoms.Untraced, PathAtoms.Head, PathAtoms.End]);
+            // An edit of the text can make a ".." segment out of text that has none ("x.".Replace("x", "."),
+            // "a/..x" without its last character, the name of "...x" without its extension).
+            if (MayMakeTraversal(name, ps, args, self)) parts.Add(PathAtoms.Untraced);
+            if (operands.Count == 0) return PathSlot([PathAtoms.Untraced, PathAtoms.Head, PathAtoms.End]);
+            // Anything but a copy of one value (a part of it, an edit, a file in it) is not the Documents folder itself.
+            return PathSlot(operands.Count == 1 && FolderCopies.Contains(name) ? PathAtoms.Combine(parts) : PathAtoms.Combine(PathAtoms.Inside(parts)));
         }
-        // The text of a number, character or name generated by the runtime is no path of its own.
+        // The text of a number or name generated by the runtime is no path of its own. (A character can be
+        // "." or "/": its text is untraced, see Interpolate.)
         if (ps.Length == 0 && (name == "System.IO.Path::GetRandomFileName" || (name.EndsWith("::ToString", StringComparison.Ordinal)
-            && DeclaringType(name) is "System.Char" or "System.Int32" or "System.Int64" or "System.UInt32" or "System.UInt64" or "System.Int16"
+            && DeclaringType(name) is "System.Int32" or "System.Int64" or "System.UInt32" or "System.UInt64" or "System.Int16"
                 or "System.UInt16" or "System.Byte" or "System.Guid" or "System.Boolean")))
             return PathSlot([PathAtoms.End]);  // a random name has an extension
         return Returned(h, name, sig, isNewobj);
+    }
+
+    // Whether an edit among the combiners can make a ".." segment that the text it is given does not
+    // have: any that removes, inserts or replaces characters, except a replacement by a known text with
+    // no dot or separator (so nothing is joined up), trimming one known separator, and a canonical
+    // Unicode normalization (compatibility forms turn "\u2025" into "..").
+    static bool MayMakeTraversal(string name, ImmutableArray<string> ps, Slot[] args, int self) {
+        static bool Plain(char c) => c is not ('.' or '/' or '\\');
+        bool Char(int i, Func<char, bool> ok) => args[i + self] is { Tag: Tag.Int } a && ok((char)a.Number);
+        switch (name) {
+            case "System.String::Replace":
+                return !(ps is ["System.Char", "System.Char"] && Char(1, Plain)
+                    || ps is ["System.String", "System.String"] && args[1 + self] is { Tag: Tag.String, Text: { Length: > 0 } t } && t.All(Plain));
+            case "System.String::Trim" or "System.String::TrimStart" or "System.String::TrimEnd":
+                return !(ps is ["System.Char"] && Char(0, c => !Plain(c) && c != '.'));
+            case "System.String::Normalize":
+                return !(ps.Length == 0 || ps is ["System.Text.NormalizationForm"] && args[self] is { Tag: Tag.Int, Number: 1 or 2 });
+            case "System.IO.Path::ChangeExtension":
+                return !(args.Length == 2 && args[1] is { Tag: Tag.String, Text: { } e } && e.TrimStart('.') is { Length: > 0 } x
+                    && e.Length - x.Length <= 1 && x.All(Plain));
+            case "System.String::Substring" or "System.String::Remove" or "System.String::Insert" or "System.IO.Path::GetFileNameWithoutExtension":
+                return true;
+            default:
+                return false;
+        }
     }
 
     // What a method returning a path type returns, from its own returns (resolved per mod).
@@ -1548,7 +2021,10 @@ internal sealed partial class MethodWalker {
     // instruction is one the game's method (or this check, where it was set) already accounts for.
     void OperandTarget(Slot v, string what) {
         switch (v.Tag) {
-            case Tag.Null or Tag.String or Tag.Int or Tag.Path:
+            case Tag.Null or Tag.String or Tag.Int:
+                return;
+            // A string (a path or text the code built), unless a join made it from something that may not be one.
+            case Tag.Path when (v.Number & Slot.NotOnlyText) == 0:
                 return;
             case Tag.Type or Tag.Member or Tag.Node or Tag.Element:
                 Target(v, what, false);
@@ -1584,7 +2060,7 @@ internal sealed partial class MethodWalker {
             case Tag.Null:
                 break;  // holds no member
             case Tag.Type or Tag.Member when value.Text != null && (value.Number & Slot.Moved) == 0:
-                Set(mf.ReflectionStores, node).Add(new(value.Text, value.Asm, value.Tag == Tag.Member, (value.Number & Slot.OrDerived) != 0));
+                Set(mf.ReflectionStores, node).Add(new(value.Text, value.Asm, value.Tag == Tag.Member, (value.Number & Slot.OrDerived) != 0, value.Value));
                 break;
             case Tag.Node when value.Text != null:
                 Set(mf.FieldCopies, node).Add(NodeSource(value));
@@ -1593,7 +2069,7 @@ internal sealed partial class MethodWalker {
                 // What the collection holds once the method has run (the first pass records nothing).
                 if (StateOf(value) is not { } state) break;
                 if (state.Tainted != null || (state.Escaped != null && !state.Lookup)) { mf.UntrackedStores.Add(node); break; }
-                foreach (var held in state.Held) Set(mf.ReflectionStores, node).Add(state.Escaped != null ? held with { Bounded = true } : held);
+                foreach (var held in state.Held) Set(mf.ReflectionStores, node).Add(state.Escaped != null ? held with { Bounded = true, Value = null } : held);
                 if (state.Node != null) Set(mf.FieldCopies, node).Add(state.Node);
                 break;
             default:
@@ -1611,7 +2087,7 @@ internal sealed partial class MethodWalker {
         // What the collection holds once the method has run (the first pass records nothing).
         if (StateOf(value.Number) is not { } state) return;
         if (state.Tainted != null || (state.Escaped != null && !state.Lookup)) { mf.UntrackedStores.Add(node); return; }
-        foreach (var held in state.Held) Set(mf.ReflectionStores, node).Add(state.Escaped != null ? held with { Bounded = true } : held);
+        foreach (var held in state.Held) Set(mf.ReflectionStores, node).Add(state.Escaped != null ? held with { Bounded = true, Value = null } : held);
         if (state.Node != null && state.Node != node) Set(mf.FieldCopies, node).Add(state.Node);
     }
 
@@ -1728,20 +2204,27 @@ internal sealed partial class MethodWalker {
     // link to it.
     void ManualRewrite(string name, ImmutableArray<string> ps, Slot[] args, int self) {
         int original = ps.IndexOf("System.Reflection.MethodBase");
+        // The transpiler given here is one Harmony runs, whatever its name: the mod rewrites code.
+        void Rewrites(string what) => Note("code-rewrite", $"{name} is given a transpiler ({what})  <-  {mf.Name}", Origin.Structure);
         switch (name) {
             case "HarmonyLib.Harmony::Patch" when original >= 0:
                 // Patch(original, prefix, postfix, transpiler, finalizer, ...)
-                if (original + 3 < ps.Length && args[original + 3 + self].Tag != Tag.Null)
+                if (original + 3 < ps.Length && args[original + 3 + self].Tag != Tag.Null) {
                     RewriteTarget(args[original + self], "the original Harmony.Patch gives a transpiler");
+                    Rewrites("Harmony.Patch");
+                }
                 break;
             case "HarmonyLib.PatchProcessor::AddTranspiler":
-                if (args.Length > 1 && args[1].Tag != Tag.Null)
+                if (args.Length > 1 && args[1].Tag != Tag.Null) {
                     RewriteTarget(Slot.Unknown, "the original of a PatchProcessor a transpiler is added to");
+                    Rewrites("PatchProcessor.AddTranspiler");
+                }
                 break;
             case "HarmonyLib.Harmony::ReversePatch" or "HarmonyLib.Harmony::CreateReversePatcher" or "HarmonyLib.ReversePatcher::.ctor" when original >= 0:
                 bool given = false;
                 for (int i = original + 2; i < ps.Length; i++) given |= ps[i] == "System.Reflection.MethodInfo" && args[i + self].Tag != Tag.Null;
                 RewriteTarget(args[original + self], "the original a reverse patch copies", ifRewrites: !given);
+                if (given) Rewrites("a reverse patch");
                 break;
         }
     }
@@ -1772,7 +2255,7 @@ internal sealed partial class MethodWalker {
         Tag.Type or Tag.Member when receiver.Text != null && (receiver.Number & Slot.Moved) == 0
             => new(tag, receiver.Text, receiver.Number & Slot.OrDerived, Asm: receiver.Asm),
         Tag.Node when tag == Tag.Member => receiver with { Number = 1, Store = -1 },
-        Tag.Element when receiver.Number < 0 => new(Tag.Element, Number: assembly.Union(HeldOf(receiver)!.Select(h => h with { Member = h.Member || tag == Tag.Member }))),
+        Tag.Element when receiver.Number < 0 => new(Tag.Element, Number: assembly.Union(HeldOf(receiver)!.Select(h => h with { Member = h.Member || tag == Tag.Member, Value = null }))),
         Tag.Element when tag == Tag.Member => receiver with { Text = "member", Store = -1 },
         Tag.Node or Tag.Element => receiver with { Store = -1 },
         _ => Slot.Unknown,
@@ -1780,6 +2263,30 @@ internal sealed partial class MethodWalker {
 
     // A node slot as a source id: the node, or the members of the types it holds.
     static string NodeSource(Slot s) => s.Number == 1 ? Nodes.MemberOf(s.Text!) : s.Text!;
+
+    // Whether the result of the call being walked is only tested for null and then dropped (H9): the next
+    // instruction branches on it or pops it, or compares it with null (a null pushed next, or already under
+    // it, then ceq, cgt.un or the framework's Type.op_Equality/op_Inequality, whose result is a bool). Any
+    // other use (a dup, a store, an argument, a return) is not.
+    bool OnlyNullTested() {
+        if (passIndex + 1 >= passCode.Count) return false;
+        var next = passCode[passIndex + 1];
+        short n = next.OpCode.Value;
+        if (n == OpCodes.Brtrue.Value || n == OpCodes.Brtrue_S.Value || n == OpCodes.Brfalse.Value || n == OpCodes.Brfalse_S.Value || n == OpCodes.Pop.Value)
+            return true;
+        if (TypeEquality(next)) return Peek(0).Tag == Tag.Null;
+        if (n != OpCodes.Ldnull.Value || passIndex + 2 >= passCode.Count) return false;
+        var compare = passCode[passIndex + 2];
+        return compare.OpCode.Value == OpCodes.Ceq.Value || compare.OpCode.Value == OpCodes.Cgt_Un.Value || TypeEquality(compare);
+    }
+
+    // A call to the framework's Type equality operators.
+    bool TypeEquality(Instruction ins) {
+        if (ins.OpCode.Value != OpCodes.Call.Value) return false;
+        var h = MetadataTokens.EntityHandle(Il.Token(passIl, ins));
+        string name = Il.MemberName(md, h);
+        return name is "System.Type::op_Equality" or "System.Type::op_Inequality" && assembly.Models(h, name);
+    }
 
     // Applies reflection semantics to a call and returns the tag of its result.
     Slot Reflect(EntityHandle h, string name, MethodSignature<string> sig, Slot[] args, int self) {
@@ -1795,7 +2302,20 @@ internal sealed partial class MethodWalker {
         int ti = ReflectionApis.TypeNameArgument(name, sig, out bool member);
         if (ti >= 0) {
             var t = Arg(ti);
+            // Ignoring case, or with a resolver of the mod's own (which can return any type), the type
+            // found is not the one the name spells (H3).
+            var (ignoreCase, resolvers) = ReflectionApis.TypeNameOptions(name, sig);
+            if ((ignoreCase >= 0 && Arg(ignoreCase) is not { Tag: Tag.Int, Number: 0 }) || resolvers.Any(i => Arg(i).Tag != Tag.Null)) {
+                var how = ignoreCase >= 0 && Arg(ignoreCase) is not { Tag: Tag.Int, Number: 0 } ? "ignoring case" : "with a type resolver";
+                mf.UnresolvedReflection.Add($"{name}({(t.Tag == Tag.String ? "\"" + t.Text + "\"" : "runtime value")}, {how})  <-  {mf.Name}");
+                return Slot.Unknown;
+            }
             var (typePart, qualifier) = AssemblyWalker.SplitTypeName((t.Text ?? "").Trim());
+            // A type looked up by a name with no assembly part anywhere (a qualifier, also one inside generic
+            // arguments, can make the runtime load that assembly) whose result is only tested for null (H9).
+            // Only a lookup: a by-name CreateInstance has run the constructor before its result is tested (H9 review).
+            bool nullTest = !member && name is "HarmonyLib.AccessTools::TypeByName" or "System.Reflection.Assembly::GetType" or "System.Reflection.Module::GetType"
+                && qualifier == null && t.Text?.IndexOfAny(['[', ',']) < 0 && OnlyNullTested();
             if (t.Tag == Tag.String && Policy.NormalizeTypeName(typePart) is { Length: > 0 } type) {
                 // (string assemblyName, string typeName): the assembly is named by the argument before.
                 if (ti > 0 && ReflectionApis.TakesAssemblyName(name)) {
@@ -1812,10 +2332,14 @@ internal sealed partial class MethodWalker {
                 foreach (var cap in policy.CapsOfType(type)) Note(cap, $"{t.Text}  ({method}, resolved)  <-  {mf.Name}", Origin.Reflection);
                 // A "Type:Member" string reaches that member. A type alone reaches no member yet: its
                 // members are reached where they are looked up, as for a typeof; where the type lives
-                // still matters (a type of code that was not analyzed).
+                // still matters (a type of code that was not analyzed). A by-name CreateInstance runs a
+                // constructor of the type, as Activator.CreateInstance(Type) does (H9 review; before, a game
+                // or library type's constructor was not reached).
                 int colon = typePart.LastIndexOf(':');
-                IReadOnlyList<string>? members = member && colon > 0 ? ReflectionApis.MemberNames(method, typePart[(colon + 1)..].Trim()) : [];
-                AddReflected(new(type, qualifier, members, $"{t.Text}  ({method}, resolved)  <-  {mf.Name}"));
+                IReadOnlyList<string>? members = member && colon > 0 ? ReflectionApis.MemberNames(method, typePart[(colon + 1)..].Trim())
+                    : ReflectionApis.CreatesByName(name) ? [".ctor"] : [];
+                nullTest &= qualifier == null;
+                AddReflected(new(type, qualifier, members, $"{t.Text}  ({method}, resolved{(nullTest ? ", only tested for null" : "")})  <-  {mf.Name}", NullTestOnly: nullTest));
                 return new(member ? Tag.Member : Tag.Type, type, Asm: qualifier);
             }
             // A name built at run time in an assembly whose name is known (typeof(X).Assembly) finds
@@ -1831,6 +2355,9 @@ internal sealed partial class MethodWalker {
         // object is known to be exactly of it) any type derived from it.
         if (name is "System.Object::GetType" or "System.Exception::GetType" && Arg(0) is { Tag: Tag.Object, Text: { } declared } o)
             return new(Tag.Type, declared, o.Number == 1 ? 0 : Slot.OrDerived, Asm: o.Asm);
+        // An object of the types a type node holds (D5, D7): its run-time type is one of them, resolved per mod.
+        if (name is "System.Object::GetType" or "System.Exception::GetType" && Arg(0) is { Tag: Tag.Value, Text: { } typeNode })
+            return new(Tag.Node, typeNode);
 
         // Calls that run, create, read or write a member or type: each target must be traced.
         bool fieldTarget = false;
@@ -1851,8 +2378,27 @@ internal sealed partial class MethodWalker {
         // Member access or instantiation on a resolved type grants that type's capabilities. A
         // lookup on an unresolved type is not a finding by itself (Harmony targets methods this
         // way); running, creating, reading or writing what it finds is, above.
+        // lookup: the lookup method for MemberNames and NameNode; reportNode: a node or collection
+        // target the sink above did not already record.
+        void LookUp(Slot t, IReadOnlyList<string>? members, string? nameNode, string lookup, bool reportNode) {
+            if (t.Tag == Tag.Type && t.Text != null && t.Text != "*") {
+                foreach (var cap in policy.CapsOfType(t.Text)) Note(cap, $"{t.Text}  ({method})  <-  {mf.Name}", Origin.Reflection);
+                // Where the type lives decides the rest (game, trusted library, ...); a member looked
+                // up by a constant name narrows it to that member. A type known only up to its
+                // derived types counts as that type (the finding is where its member is used).
+                AddReflected(new(t.Text, t.Asm, members, $"{t.Text}{Shown(members)}  ({method})  <-  {mf.Name}",
+                    NameNode: nameNode, Lookup: lookup, Derived: (t.Number & Slot.OrDerived) != 0));
+            } else if (t.Tag == Tag.Node && t.Text != null && reportNode) {
+                mf.FieldReflection.Add(new(NodeSource(t), $"{name} on the value of {Nodes.Describe(NodeSource(t))}  <-  {mf.Name}", false, Members: members, NameNode: nameNode, Lookup: lookup));
+            } else if (t.Tag == Tag.Element && reportNode && StateOf(t) is { } state) {
+                // A lookup on a type taken from a collection: each type it holds.
+                foreach (var held in state.Held.Where(x => !x.Member && x.Type != "*"))
+                    AddReflected(new(held.Type, held.Assembly, members, $"{held.Type}{Shown(members)}  ({method}, from an array or list)  <-  {mf.Name}"));
+                if (state.Node != null)
+                    mf.FieldReflection.Add(new(state.Node, $"{name} on an element of an array or list holding members of the types of {Nodes.Describe(state.Node)}  <-  {mf.Name}", false, Members: members));
+            }
+        }
         if (ReflectionApis.UsesTypeArgument(name)) {
-            var t = Arg(0);
             var memberName = ReflectionApis.MemberNameArgument(name) is int mi && Arg(mi) is { Tag: Tag.String, Text: { } mn } ? mn : null;
             var members = ReflectionApis.MemberNames(method, memberName);
             // A plural lookup whose elements are only ever taken by a filter that requires a constant
@@ -1862,21 +2408,26 @@ internal sealed partial class MethodWalker {
                 members = [.. only.SelectMany(n => ReflectionApis.MemberNames(single, n) ?? [n]).Distinct()];
             // A member named by one of this method's string parameters: by what every call passes.
             var nameNode = memberName == null && ReflectionApis.MemberNameArgument(name) is int ni ? NameParameter(Arg(ni)) : null;
-            if (t.Tag == Tag.Type && t.Text != null && t.Text != "*") {
-                foreach (var cap in policy.CapsOfType(t.Text)) Note(cap, $"{t.Text}  ({method})  <-  {mf.Name}", Origin.Reflection);
-                // Where the type lives decides the rest (game, trusted library, ...); a member looked
-                // up by a constant name narrows it to that member. A type known only up to its
-                // derived types counts as that type (the finding is where its member is used).
-                AddReflected(new(t.Text, t.Asm, members, $"{t.Text}{(members != null ? "::" + string.Join("/", members) : "")}  ({method})  <-  {mf.Name}",
-                    NameNode: nameNode, Lookup: method));
-            } else if (t.Tag == Tag.Node && t.Text != null && !fieldTarget) {
-                mf.FieldReflection.Add(new(NodeSource(t), $"{name} on the value of {Nodes.Describe(NodeSource(t))}  <-  {mf.Name}", false, Members: members, NameNode: nameNode, Lookup: method));
-            } else if (t.Tag == Tag.Element && !fieldTarget && StateOf(t) is { } state) {
-                // A lookup on a type taken from a collection: each type it holds.
-                foreach (var held in state.Held.Where(x => !x.Member && x.Type != "*"))
-                    AddReflected(new(held.Type, held.Assembly, members, $"{held.Type}{(members != null ? "::" + string.Join("/", members) : "")}  ({method}, from an array or list)  <-  {mf.Name}"));
-                if (state.Node != null)
-                    mf.FieldReflection.Add(new(state.Node, $"{name} on an element of an array or list holding members of the types of {Nodes.Describe(state.Node)}  <-  {mf.Name}", false, Members: members));
+            LookUp(TraverseObjectType(name, sig, Arg(0)) ?? Arg(0), members, nameNode, method, !fieldTarget);
+        }
+        // Lookups by name outside Type's own members (H3): Delegate.CreateDelegate(Type, Type target,
+        // string method, ...) binds a method of that name of the target type; the by-name Expression
+        // factories on a System.Type (Call(Type, string, ...), Field/Property(Expression, Type, string))
+        // find a member of that name. Both ignore case where asked to, which the names' comparison
+        // covers (ReflectionApis.MemberMatches). The sink above already requires the type to be traced
+        // and records a node or collection target, as reaching any member.
+        {
+            var ps = sig.ParameterTypes;
+            (int Type, int Name, string Lookup)? byName = name == "System.Delegate::CreateDelegate" && self == 0 && ps.Length > 2
+                && ps[1] == "System.Type" && ps[2] == "System.String" ? (1, 2, "GetMethod")
+                // new HarmonyMethod(Type, string, ...) finds the patch method by name (AccessTools.Method): the method of
+                // the mod's own type it names is then reached by reflection, as AccessTools.Method(type, name) would (D7).
+                : name == "HarmonyLib.HarmonyMethod::.ctor" && self == 0 && ps.Length > 1 && ps[0] == "System.Type" && ps[1] == "System.String" ? (0, 1, "GetMethod")
+                : self == 0 ? ReflectionApis.ExpressionByName(name, ps) : null;
+            if (byName is var (typeArg, nameArg, lookup)) {
+                var given = Arg(nameArg) is { Tag: Tag.String, Text: { } gn } ? gn : null;
+                var members = ReflectionApis.MemberNames(lookup, given);
+                LookUp(Arg(typeArg), members, given == null ? NameParameter(Arg(nameArg)) : null, lookup, false);
             }
         }
         // A type named as a type argument (Activator.CreateInstance<T>(), AccessTools.CreateInstance<T>(),
@@ -1898,13 +2449,63 @@ internal sealed partial class MethodWalker {
         if (name is "System.Type::get_Assembly" or "System.Reflection.TypeInfo::get_Assembly" && Arg(0) is { Tag: Tag.Type } owner)
             return new(Tag.Assembly, Asm: (owner.Number & Slot.OrDerived) == 0 ? owner.Asm ?? "" : "");
         if (name == "System.Reflection.Assembly::GetExecutingAssembly") return new(Tag.Assembly, Asm: assembly.Name);
+        if (TypedRead(name, args, self) is { } typed) return typed;
         switch (ReflectionApis.Lookup(name, sig)) {
-            case LookupResult.Member: return Derived(Arg(0), Tag.Member);
+            case LookupResult.Member: return WithValue(Derived(Arg(0), Tag.Member), name, method, Arg(0), args);
             case LookupResult.NestedType: return Derived(Arg(0), Tag.Type);
             case LookupResult.Members: return Plural(Arg(0), true);
             case LookupResult.NestedTypes: return Plural(Arg(0), false);
         }
         return Traverse(h, name, sig, args) ?? Slot.Unknown;
+    }
+
+    // The members a lookup reaches, as evidence: "::a/b", with a nested type's members (see
+    // ReflectionApis.MemberNames) as " and nested type N"; nothing for any member.
+    static string Shown(IReadOnlyList<string>? members) {
+        if (members == null) return "";
+        var own = members.Where(m => !m.StartsWith(ReflectionApis.NestedPrefix, StringComparison.Ordinal)).ToList();
+        var nested = members.Where(m => m.StartsWith(ReflectionApis.NestedPrefix, StringComparison.Ordinal)).Select(m => m[ReflectionApis.NestedPrefix.Length..]).ToList();
+        return "::" + string.Join("/", own) + (nested.Count > 0 ? " and nested type " + string.Join("/", nested) : "");
+    }
+
+    // A member found by a constant name on exactly a resolved type (not one known only up to its derived types,
+    // not a Traverse) carries its declared type when the check knows it (D5, D6; see AssemblyWalker.MemberValueOf).
+    Slot WithValue(Slot member, string name, string method, Slot receiver, Slot[] args) {
+        if (member.Tag != Tag.Member || receiver is not { Tag: Tag.Type, Text: { } type } || (receiver.Number & (Slot.OrDerived | Slot.Moved)) != 0
+            || type == "*" || ReflectionApis.LookupKind(method) is not { } kind
+            || ReflectionApis.MemberNameArgument(name) is not int ni || ni >= args.Length || args[ni] is not { Tag: Tag.String, Text: { } memberName })
+            return member;
+        var value = assembly.MemberValueOf(type, receiver.Asm, kind, memberName);
+        // Typed from the game-API map for a game type found by name: only if the game alone has a type of that name.
+        if (value != null && receiver.Asm == null)
+            mf.TypedByName.Add((type, $"{type}::{memberName} ({method}, a type found by name) is typed as the game's {value.Value.Type}, but another type of that name can be the one found  <-  {mf.Name}"));
+        return member with { Value = value };
+    }
+
+    // What is read through a member whose declared type is known (D5, D6): FieldType, PropertyType and ReturnType are
+    // exactly that type; GetValue gives an object of it or of a type derived from it. A member a node holds gives the
+    // node's type node instead (resolved per mod from the members it holds, see Nodes.TypeOfNode). Only for a member
+    // of the kind the call is made on: anything else is unknown, as before.
+    static Slot? TypedRead(string name, Slot[] args, int self) {
+        (MemberKind Kind, bool Value)? read = name switch {
+            "System.Reflection.FieldInfo::GetValue" => (MemberKind.Field, true),
+            "System.Reflection.PropertyInfo::GetValue" => (MemberKind.Property, true),
+            "System.Reflection.FieldInfo::get_FieldType" => (MemberKind.Field, false),
+            "System.Reflection.PropertyInfo::get_PropertyType" => (MemberKind.Property, false),
+            "System.Reflection.MethodInfo::get_ReturnType" => (MemberKind.Method, false),
+            _ => null,
+        };
+        if (read is not var (kind, value) || self != 1 || args.Length == 0) return null;
+        var receiver = args[0];
+        switch (receiver.Tag) {
+            case Tag.Member when receiver.Value is { } v && v.Kind == kind && (receiver.Number & (Slot.OrDerived | Slot.Moved)) == 0:
+                return value ? new Slot(Tag.Object, v.Type, 0, Asm: v.Asm) : new Slot(Tag.Type, v.Type, 0, Asm: v.Asm);
+            case Tag.Node when receiver.Text != null: {
+                var node = Nodes.TypeOfNode(kind, value, NodeSource(receiver));
+                return value ? new Slot(Tag.Value, node) : new Slot(Tag.Node, node);
+            }
+        }
+        return null;
     }
 
     // An array or list of members (or nested types) of the receiver's type, made by a lookup (see
@@ -1916,15 +2517,26 @@ internal sealed partial class MethodWalker {
             case Tag.Node when receiver.Text != null:
                 return NewCollection(c => { c.Node = members ? Nodes.MemberOf(NodeSource(receiver)) : NodeSource(receiver); c.Lookup = true; });
             case Tag.Element when receiver.Number < 0:
-                return NewCollection(c => { c.Held.UnionWith(HeldOf(receiver)!.Select(h => h with { Member = members })); c.Lookup = true; });
+                return NewCollection(c => { c.Held.UnionWith(HeldOf(receiver)!.Select(h => h with { Member = members, Value = null })); c.Lookup = true; });
             case Tag.Element:
                 return NewCollection(c => { c.Includes.Add((receiver.Number, members || receiver.Text == "member")); c.Lookup = true; });
         }
         return Slot.Unknown;  // on a type the walker does not know: its members are not traced
     }
 
+    // Traverse.Create(object) and new Traverse(object) start from the object's run-time type: for an
+    // object of a declared class or struct, that type (exactly, for a new or boxed one) or a type derived
+    // from it, as for GetType (H7, under the same declared-type assumption: README Known gaps). Not for
+    // a Type or member passed as an object (Traverse walks the RuntimeType's own members), a value the
+    // walker does not know, or one declared only as object, ValueType or Enum: null, not traced.
+    static Slot? TraverseObjectType(string name, MethodSignature<string> sig, Slot a0) =>
+        name is "HarmonyLib.Traverse::Create" or "HarmonyLib.Traverse::.ctor" && sig.ParameterTypes is ["System.Object"]
+            && a0 is { Tag: Tag.Object, Text: { } declared } && declared is not ("System.Object" or "System.ValueType" or "System.Enum")
+            && !ReflectionApis.IsReflectionType(declared)
+            ? new(Tag.Type, declared, a0.Number == 1 ? 0 : Slot.OrDerived, Asm: a0.Asm) : null;
+
     // Harmony's Traverse steps through members by name from a type or an object. Starting from
-    // an object (Create(object)) means its run-time type, which is not traced.
+    // an object (Create(object)) means its run-time type: traced as for GetType (TraverseObjectType).
     Slot? Traverse(EntityHandle h, string name, MethodSignature<string> sig, Slot[] args) {
         var a0 = args.Length > 0 ? args[0] : Slot.Unknown;
         switch (name) {
@@ -1932,6 +2544,8 @@ internal sealed partial class MethodWalker {
                 var ps = sig.ParameterTypes;
                 if (ps.Length == 1 && ps[0] == "System.Type")
                     return a0.Tag == Tag.Type && a0.Text != null ? new(Tag.Member, a0.Text, a0.Number & Slot.OrDerived, Asm: a0.Asm) : Slot.Unknown;
+                if (TraverseObjectType(name, sig, a0) is { } of)
+                    return new(Tag.Member, of.Text, of.Number & Slot.OrDerived, Asm: of.Asm);
                 var targs = assembly.MethodTypeArgumentTypes(h);  // Create<T>(), reached in Reflect
                 return ps.Length == 0 && targs.Count == 1 && !targs[0].Name.StartsWith('!') ? new(Tag.Member, targs[0].Name, Asm: targs[0].Assembly) : Slot.Unknown;
             }

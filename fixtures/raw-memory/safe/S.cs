@@ -20,6 +20,9 @@ public class SafeSpans {
     public static void ThroughRefReturn(int[] a) { Third(a) = 7; }
     public static int StackallocVariable(int n) { Span<int> s = stackalloc int[n]; s[0] = 1; return s[0]; }
     public static int StackallocStruct() { Span<Pair> s = stackalloc Pair[5]; s[4] = new Pair(1, 2); return s[4].A; }
+    // Spans over constant data constructed in place (call instance .ctor on the local's address).
+    public static int InPlaceConstants(int i) { ReadOnlySpan<byte> x = [1, 2, 3, 4, 5, 6, 7, 8, 9]; return x[i]; }
+    public static int InPlaceUtf8(bool c) { ReadOnlySpan<byte> x; if (c) x = "abcdefgh"u8; else x = "xy"u8; return x.Length; }
 }
 
 public readonly struct Pair(int a, int b) {

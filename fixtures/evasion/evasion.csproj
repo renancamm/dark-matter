@@ -1,12 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- One assembly per case: dotnet build -p:Case=Dyn. Without a Case, all cases build into
-       one assembly (the original probe). The Harmony cases reference the stand-in under Harmony's
+  <!-- One assembly per case: dotnet build -p:Case=Dyn. Without a Case, only EnumerateAndInvoke
+       builds, as in the other multi-case projects: several cases define the same type names, so they
+       cannot share one assembly (a solution build used to fail here). The Harmony cases reference the stand-in under Harmony's
        real assembly name (0Harmony), as mods do: the check models Harmony only for members that
        live there (policy 12), not for types of the same name compiled into the mod. -->
   <PropertyGroup>
-    <Case Condition="'$(Case)' == ''">All</Case>
+    <Case Condition="'$(Case)' == ''">EnumerateAndInvoke</Case>
     <AssemblyName>Evasion.$(Case)</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <!-- H8: the cases that are compiled with unsafe code enabled (the flag alone is informational;
+       [SkipLocalsInit] needs it). -->
+  <PropertyGroup Condition="'$(Case)' == 'UnsafeFlagOnly' or '$(Case)' == 'UnsafePointerLocal' or '$(Case)' == 'StackallocNoInit'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <!-- The per-case properties (and the test harness's per-case output folders) stay with the case,
        so the referenced stand-ins build once, not once per case. -->
@@ -16,8 +22,7 @@
     </ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <Compile Include="cases/*.cs" Condition="'$(Case)' == 'All'" />
-    <Compile Include="cases/$(Case).cs" Condition="'$(Case)' != 'All'" />
+    <Compile Include="cases/$(Case).cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../harmony-patch/stub/harmony-patch-stub.csproj" />

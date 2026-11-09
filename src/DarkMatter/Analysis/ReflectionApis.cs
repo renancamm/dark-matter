@@ -77,6 +77,11 @@ internal static partial class ReflectionApis {
     ];
 
     /// <summary>The type and member reference types whose values the walker traces (also through fields).</summary>
+    // Matched by signature name, not gated on the framework (G4): this only decides which fields,
+    // parameters, returns and locals the walker traces. A type of the same name defined elsewhere is traced
+    // the same way, and whatever it holds that is not a resolved type or member makes the node untraced;
+    // the calls that act on a traced value are modelled only for the framework's members (see
+    // AssemblyWalker.Models). So a same-named type adds tracing and cannot lower a result.
     public static bool IsReflectionType(string typeName) => typeName is "System.Type" or "System.Reflection.TypeInfo"
         or "System.Reflection.MemberInfo" or "System.Reflection.MethodBase" or "System.Reflection.MethodInfo"
         or "System.Reflection.ConstructorInfo" or "System.Reflection.FieldInfo" or "System.Reflection.PropertyInfo"
@@ -232,6 +237,9 @@ internal static partial class ReflectionApis {
     public static bool TakesAssemblyName(string name) =>
         name is "System.Activator::CreateInstance" or "System.AppDomain::CreateInstance" or "System.AppDomain::CreateInstanceAndUnwrap";
 
+    /// <summary>Lookups by type name (<see cref="TypeNameArgument"/>) that also create an object of the type: they run a constructor.</summary>
+    public static bool CreatesByName(string name) => TakesAssemblyName(name) || name == "System.Reflection.Assembly::CreateInstance";
+
     /// <summary>
     /// Index of the member-name argument of a lookup on a Type (System.Type::GetMethod(name, ...),
     /// AccessTools.Field(type, name), ...), counting <c>this</c>, or null if the call takes none.
@@ -244,7 +252,9 @@ internal static partial class ReflectionApis {
     /// <paramref name="member"/> (null when the name is not a constant): the method, the field, a
     /// property's or an event's accessors, or the constructor. A field whose name is not known
     /// reaches the type's initializer (".cctor") and no other code; a nested type, nothing yet (an
-    /// empty list: where the type lives still matters). Null means any member of the type.
+    /// empty list: where the type lives still matters). Null means any member of the type. GetMember
+    /// also finds a nested type of that name, which the walker holds as a member: every member of it is
+    /// reached, written "/Name" (see <see cref="NestedPrefix"/>).
     /// </summary>
     public static IReadOnlyList<string>? MemberNames(string method, string? member) {
         switch (method) {
@@ -265,6 +275,9 @@ internal static partial class ReflectionApis {
                 return ["set_Item"];
         }
         if (member == null) return null;
+        // InvokeMember with an empty name (or "[DISPID=...]") runs the type's default member
+        // ([DefaultMember]), whatever it is called: any member (H7).
+        if (method == "InvokeMember" && (member.Length == 0 || member.StartsWith('['))) return null;
         return method switch {
             "GetMethod" or "GetDeclaredMethod" or "GetRuntimeMethod" or "Method" or "DeclaredMethod" or "MethodDelegate"
                 or "GetField" or "GetDeclaredField" or "GetRuntimeField" or "Field" or "DeclaredField" or "FieldRefAccess"
@@ -273,10 +286,109 @@ internal static partial class ReflectionApis {
             "PropertyGetter" or "DeclaredPropertyGetter" => ["get_" + member],
             "PropertySetter" or "DeclaredPropertySetter" => ["set_" + member],
             "GetEvent" or "GetDeclaredEvent" or "GetRuntimeEvent" => ["add_" + member, "remove_" + member, "raise_" + member],
-            "GetMember" => [member, "get_" + member, "set_" + member, "add_" + member, "remove_" + member],
+            "GetMember" => [member, "get_" + member, "set_" + member, "add_" + member, "remove_" + member, NestedPrefix + member],
             "InvokeMember" => [member, "get_" + member, "set_" + member],
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// The kind of member a single lookup by name returns (GetField, AccessTools.Field, ...: a field), for typing
+    /// what is read through it (D5, D6); null for any other lookup (a getter or setter by a property's name, an
+    /// indexer, a constructor, GetMember, which can return several kinds).
+    /// </summary>
+    public static MemberKind? LookupKind(string method) => method switch {
+        "GetField" or "GetDeclaredField" or "GetRuntimeField" or "Field" or "DeclaredField" => MemberKind.Field,
+        "GetProperty" or "GetDeclaredProperty" or "GetRuntimeProperty" or "Property" or "DeclaredProperty" => MemberKind.Property,
+        "GetMethod" or "GetDeclaredMethod" or "GetRuntimeMethod" or "Method" or "DeclaredMethod" => MemberKind.Method,
+        _ => null,
+    };
+
+    /// <summary>A reached "member" that stands for every member of the nested type named after it (see <see cref="MemberNames"/>).</summary>
+    public const string NestedPrefix = "/";
+
+    /// <summary>
+    /// Whether a member (or nested type) named <paramref name="actual"/> is one a lookup by the name
+    /// <paramref name="reached"/> (from <see cref="MemberNames"/>, without <see cref="NestedPrefix"/>) can
+    /// find. Names compare ignoring case: <c>BindingFlags.IgnoreCase</c>, binding flags that are not a
+    /// constant, the by-name Expression factories and <c>Delegate.CreateDelegate(..., ignoreCase)</c> all
+    /// find a member under any spelling, and an exact lookup finds a subset of that (an over-approximation
+    /// only for members whose names differ in case alone; H3). A name ending in '*' is a prefix (GetMember
+    /// and InvokeMember look names up that way; for the other lookups a name with a '*' is hand-written IL,
+    /// and the prefix covers it too).
+    /// </summary>
+    public static bool MemberMatches(string reached, string actual) =>
+        reached.EndsWith('*') ? actual.StartsWith(reached[..^1], StringComparison.OrdinalIgnoreCase)
+            : string.Equals(reached, actual, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether <paramref name="member"/> ("T::Name", "T/Nested::Name", ...) is reached by a lookup on
+    /// <paramref name="type"/> that names <paramref name="reached"/> (see <see cref="MemberNames"/>): that
+    /// member of the type, one of that name of a nested type (the walker counts a nested type as the type it
+    /// was found from), or, for "/Name", any member of a nested type of that name (<see cref="MemberMatches"/>).
+    /// </summary>
+    public static bool ReachesMember(string type, string reached, string member) {
+        if (!member.StartsWith(type, StringComparison.Ordinal) || member.Length <= type.Length) return false;
+        var rest = member[type.Length..];
+        if (reached.StartsWith(NestedPrefix, StringComparison.Ordinal)) {
+            if (rest[0] != '/') return false;
+            int end = rest.IndexOfAny(['/', ':'], 1);
+            return end > 1 && MemberMatches(reached[NestedPrefix.Length..], rest[1..end]);
+        }
+        int sep = rest.LastIndexOf("::", StringComparison.Ordinal);
+        if (sep < 0 || !(sep == 0 || rest[0] == '/')) return false;
+        return MemberMatches(reached, rest[(sep + 2)..]);
+    }
+
+    /// <summary>
+    /// Whether the nested type <paramref name="nested"/> ("T/Name") is one a lookup on <paramref name="type"/>
+    /// for the reached "member" <paramref name="reached"/> ("/Name", see <see cref="NestedPrefix"/>) can find.
+    /// </summary>
+    public static bool ReachesNested(string type, string reached, string nested) =>
+        reached.StartsWith(NestedPrefix, StringComparison.Ordinal) && nested.Length > type.Length + 1
+            && nested.StartsWith(type + "/", StringComparison.Ordinal) && nested.IndexOf('/', type.Length + 1) < 0
+            && MemberMatches(reached[NestedPrefix.Length..], nested[(type.Length + 1)..]);
+
+    /// <summary>
+    /// For a by-name Expression factory on a System.Type (Call(Type, string, Type[], params Expression[]),
+    /// Field(Expression, Type, string), Property(Expression, Type, string)): the argument indices of the
+    /// type and the name, and the single-member lookup it does (for <see cref="MemberNames"/>); null for
+    /// any other call. The factories find the member ignoring case (see <see cref="MemberMatches"/>).
+    /// </summary>
+    public static (int Type, int Name, string Lookup)? ExpressionByName(string name, IReadOnlyList<string> ps) {
+        if (!name.StartsWith("System.Linq.Expressions.Expression::", StringComparison.Ordinal)) return null;
+        string method = name[(name.IndexOf("::", StringComparison.Ordinal) + 2)..];
+        string? lookup = method switch { "Call" => "GetMethod", "Field" => "GetField", "Property" => "GetProperty", "PropertyOrField" => "GetMember", _ => null };
+        if (lookup == null) return null;
+        for (int i = 0; i + 1 < ps.Count; i++)
+            if (ps[i] == "System.Type" && ps[i + 1] == "System.String") return (i, i + 1, lookup);
+        return null;
+    }
+
+    /// <summary>
+    /// Arguments (counting <c>this</c>) of a lookup of a type by name (<see cref="TypeNameArgument"/>) that
+    /// can make it find a type other than the one named exactly: the ignoreCase flag (unless it is the
+    /// constant false), and the assembly and type resolvers of Type.GetType (unless they are null). A
+    /// resolver is the mod's own code and can return any type.
+    /// </summary>
+    public static (int IgnoreCase, int[] Resolvers) TypeNameOptions(string name, MethodSignature<string> sig) {
+        int self = sig.Header.IsInstance ? 1 : 0;
+        var ps = sig.ParameterTypes;
+        var bools = Enumerable.Range(0, ps.Length).Where(i => ps[i] == "System.Boolean").ToList();
+        int ignoreCase = name switch {
+            // (string, bool throwOnError, bool ignoreCase), (string, Func, Func, bool throwOnError, bool ignoreCase)
+            "System.Type::GetType" or "System.Type::ReflectionOnlyGetType" or "System.Reflection.Assembly::GetType" => bools.Count >= 2 ? bools[1] : -1,
+            // (string, bool ignoreCase), (string, bool throwOnError, bool ignoreCase)
+            "System.Reflection.Module::GetType" => bools.Count >= 1 ? bools[^1] : -1,
+            // (string, bool ignoreCase, ...), (string assemblyName, string typeName, bool ignoreCase, ...)
+            "System.Reflection.Assembly::CreateInstance" or "System.Activator::CreateInstance" or "System.AppDomain::CreateInstance"
+                or "System.AppDomain::CreateInstanceAndUnwrap" => bools.Count >= 1 ? bools[0] : -1,
+            _ => -1,
+        };
+        int[] resolvers = name == "System.Type::GetType"
+            ? [.. Enumerable.Range(0, ps.Length).Where(i => ps[i].StartsWith("System.Func`", StringComparison.Ordinal)).Select(i => i + self)]
+            : [];
+        return (ignoreCase < 0 ? -1 : ignoreCase + self, resolvers);
     }
 
     /// <summary>

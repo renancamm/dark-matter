@@ -19,9 +19,13 @@ internal static class FileAccess {
     /// <param name="fieldsWritten">Whether a type's fields can be written through reflection, from
     /// <see cref="FieldProvenance.FieldsWritten"/> (writes through traced fields, parameters and
     /// return values included); null to use only the writes each method makes directly.</param>
-    public static List<(MethodFacts Method, Evidence Evidence)> Classify(IReadOnlyCollection<AssemblyFacts> assemblies, Policy policy, Func<string, bool>? fieldsWritten = null) {
+    /// <param name="reflected">Whether a method (by node key) can be reached by reflection, from
+    /// <see cref="FieldProvenance.ReachedByReflection"/>: it is then called with arguments the check does
+    /// not see, as one called from outside is; null to count only the methods called from outside.</param>
+    public static List<(MethodFacts Method, Evidence Evidence)> Classify(IReadOnlyCollection<AssemblyFacts> assemblies, Policy policy, Func<string, bool>? fieldsWritten = null,
+        Func<string, bool>? reflected = null) {
         var methods = assemblies.SelectMany(a => a.Methods).ToList();
-        var resolver = new Resolver(assemblies, methods, fieldsWritten);
+        var resolver = new Resolver(assemblies, methods, fieldsWritten, reflected);
         List<(MethodFacts, Evidence)> result = [];
         foreach (var m in methods) {
             foreach (var op in m.FileOps) {
@@ -71,9 +75,11 @@ internal static class FileAccess {
         readonly HashSet<string> open = new(StringComparer.OrdinalIgnoreCase);
         readonly HashSet<string> written = new(StringComparer.Ordinal);  // types whose fields are written through reflection
         readonly Func<string, bool> fieldsWritten;
+        readonly Func<string, bool> reflected;
         readonly Dictionary<string, HashSet<string>> value = new(StringComparer.OrdinalIgnoreCase);
 
-        public Resolver(IReadOnlyCollection<AssemblyFacts> assemblies, List<MethodFacts> methods, Func<string, bool>? fieldsWritten) {
+        public Resolver(IReadOnlyCollection<AssemblyFacts> assemblies, List<MethodFacts> methods, Func<string, bool>? fieldsWritten, Func<string, bool>? reflected) {
+            this.reflected = reflected ?? (_ => false);
             // Without the provenance's view, a write to "T+" (T or a derived type) counts for T only:
             // used for the game profile, whose own reflection the check does not hold against it.
             this.fieldsWritten = fieldsWritten ?? (type => written.Contains("*") || written.Contains(type) || written.Contains(type + "+"));
@@ -90,14 +96,12 @@ internal static class FileAccess {
             var refs = atoms.Where(IsReference).ToList();
             if (refs.Any(r => !value.ContainsKey(r))) Solve(refs);
             var origins = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var a in atoms) origins.UnionWith(IsReference(a) ? value[a] : Direct(a));
-            return origins;
+            foreach (var a in atoms) origins.UnionWith(IsReference(a) ? value[a] : [a]);
+            // The Documents folder itself (see PathAtoms.DocumentsFolder) is in Documents, like anything in it.
+            return [.. origins.Select(PathAtoms.Plain)];
         }
 
         static bool IsReference(string a) => PathAtoms.IsReference(a);
-
-        // An origin stands for itself; the game-folder literal alone is a relative fragment.
-        static IEnumerable<string> Direct(string atom) => atom == "gamelit" ? [] : [atom];
 
         // Every reference reachable from roots, then their values by iteration until nothing
         // changes (values only grow, and are sets of the finitely many origins).
@@ -122,25 +126,31 @@ internal static class FileAccess {
 
         HashSet<string> Evaluate(string atom) {
             var result = new HashSet<string>(StringComparer.Ordinal);
-            // Appended to a path (or followed by more of it): its origins, not where it begins (ends).
+            // Appended to a path (or followed by more of it): its origins, not where it begins (ends); the
+            // Documents folder itself is no longer the whole path, nor in something made from it.
             if (PathAtoms.Positioned(atom) is var (reference, drops)) {
-                result.UnionWith(value[reference]);
+                result.UnionWith(value[reference].Select(PathAtoms.Plain));
                 result.Remove(drops);
                 return result;
             }
-            if (atom.StartsWith("game:", StringComparison.Ordinal)) {
-                // Combined with a literal naming the game's folder: Documents and the environment are that folder.
-                foreach (var o in value[atom[5..]]) result.Add(o is "documents" or "environment" ? "game" : o);
+            if (PathAtoms.Made(atom) is { } made) {
+                result.UnionWith(value[made].Select(PathAtoms.Plain));
                 return result;
             }
-            foreach (var d in Definition(atom)) result.UnionWith(IsReference(d) ? value[d] : Direct(d));
+            if (PathAtoms.InGame(atom) is { } named) {
+                // Followed directly by the game's folder names: the Documents folder itself is the game's folder.
+                foreach (var o in value[named]) result.Add(o == PathAtoms.DocumentsFolder ? "game" : o);
+                return result;
+            }
+            foreach (var d in Definition(atom)) result.UnionWith(IsReference(d) ? value[d] : [d]);
             return result;
         }
 
         // The atoms a reference stands for.
         IEnumerable<string> Definition(string atom) {
             if (PathAtoms.Positioned(atom) is var (reference, _)) return [reference];
-            if (atom.StartsWith("game:", StringComparison.Ordinal)) return [atom[5..]];
+            if (PathAtoms.Made(atom) is { } made) return [made];
+            if (PathAtoms.InGame(atom) is { } named) return [named];
             if (atom.StartsWith("arg:", StringComparison.Ordinal)) {
                 var k = atom[4..];
                 var method = k[..k.LastIndexOf('#')];
@@ -150,6 +160,11 @@ internal static class FileAccess {
                 if (!byKey.TryGetValue(method, out var ms) || ms.Any(m => m.IsVirtual) || arguments.ContainsKey(method + "#*")
                     || !arguments.TryGetValue(k, out var passed))
                     return [PathAtoms.Untraced, PathAtoms.Head, PathAtoms.End];
+                // One that code not analyzed with it can call (public, a Harmony patch method, attributed;
+                // see MethodFacts.CalledFromOutside), or that reflection can reach (MethodBase.Invoke: H7 review;
+                // before, a private helper found by name kept only its direct calls' paths), gets those
+                // arguments as well as the ones seen here.
+                if (ms.Any(m => m.CalledFromOutside != null) || reflected(method)) return [.. passed, PathAtoms.Untraced, PathAtoms.Head, PathAtoms.End];
                 return passed;
             }
             if (atom.StartsWith("field:", StringComparison.Ordinal)) {

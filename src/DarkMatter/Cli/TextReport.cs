@@ -3,12 +3,16 @@ using DarkMatter.Evaluation;
 
 namespace DarkMatter.Cli;
 
-/// <summary>Human-readable report of each mod's tier, labels and reasons.</summary>
+/// <summary>Human-readable report of each mod's tier, labels and reasons; with <c>verbose</c>, the evidence behind each.</summary>
 internal static class TextReport {
+    /// <summary>Evidence lines shown per label or reason; the JSON has them all.</summary>
+    const int Shown = 20;
+
     public static void Print(TextWriter w, IReadOnlyDictionary<string, ModResult> results, bool verbose) {
         void Evidence(Finding f) {
             if (!verbose) return;
-            foreach (var e in f.Evidence) w.WriteLine($"        {e}");
+            foreach (var e in f.Evidence.Take(Shown)) w.WriteLine($"        {e}");
+            if (f.Count > Shown) w.WriteLine($"        ... and {f.Count - Shown} more (--json has them all)");
         }
         foreach (var (name, r) in results) {
             w.WriteLine();

@@ -87,6 +87,29 @@ internal static class Il {
         return starts;
     }
 
+    /// <summary>
+    /// Throws <see cref="InvalidDataException"/> when a branch or switch target, or the start of a
+    /// protected region, handler or filter, is not the start of an instruction, or a region does not
+    /// end at one (or at the end of the code). The walker reads the code once, in order, and carries
+    /// what is on the stack to each branch target (H7): code entered in the middle of an instruction
+    /// would be other instructions than the ones it read. The runtime rejects such code; the check
+    /// does not rely on that, and treats the method as one it cannot read.
+    /// </summary>
+    public static void CheckTargets(byte[] il, List<Instruction> code, MethodBodyBlock body) {
+        var at = new HashSet<int>(code.Select(i => i.Offset));
+        foreach (var ins in code)
+            foreach (var t in BranchTargets(il, ins))
+                if (!at.Contains(t)) throw new InvalidDataException($"branch to IL_{t:X4}, which is not an instruction, at IL_{ins.Offset:X4}");
+        int end = il.Length;
+        foreach (var r in body.ExceptionRegions) {
+            bool Start(int o) => at.Contains(o);
+            bool End(int o) => o == end || at.Contains(o);
+            if (!Start(r.TryOffset) || !End(r.TryOffset + r.TryLength) || !Start(r.HandlerOffset) || !End(r.HandlerOffset + r.HandlerLength)
+                || (r.Kind == ExceptionRegionKind.Filter && !Start(r.FilterOffset)))
+                throw new InvalidDataException("an exception region that does not begin and end at instructions");
+        }
+    }
+
     /// <summary>Offsets an instruction can branch to (empty if it is not a branch).</summary>
     public static List<int> BranchTargets(byte[] il, Instruction ins) {
         switch (ins.OpCode.OperandType) {

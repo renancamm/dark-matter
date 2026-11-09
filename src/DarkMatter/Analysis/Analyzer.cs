@@ -23,8 +23,10 @@ internal sealed record Allowlist(IReadOnlySet<string> Hashes, IReadOnlySet<strin
 /// <param name="game">The game's assembly names (from the game profile), or null for the policy's game
 /// assembly patterns: only members that live there get the game semantics the policy gives by name
 /// (path sources such as the saves folder).</param>
+/// <param name="gameInlineArrays">The game's [InlineArray] types, from the game profile (none without one).</param>
+/// <param name="gameTypes">The declared types of the game's members and its base types, from the game profile (D2); null without one.</param>
 internal sealed class Analyzer(Policy policy, Allowlist allow, IReadOnlyDictionary<string, string[]> gameApi, IReadOnlySet<string> framework,
-    IReadOnlySet<string>? game) {
+    IReadOnlySet<string>? game, IReadOnlyDictionary<string, InlineArrayShape>? gameInlineArrays = null, GameTypes? gameTypes = null) {
     /// <summary>The bytes of a file, or null (with why) if it cannot be read.</summary>
     public static byte[]? Read(string path, out string? error) {
         error = null;
@@ -52,7 +54,7 @@ internal sealed class Analyzer(Policy policy, Allowlist allow, IReadOnlyDictiona
         try {
             using var pe = new PEReader(System.Collections.Immutable.ImmutableArray.Create(bytes));
             if (!pe.HasMetadata) { facts.Classification = FileClass.Native; return facts; }
-            new AssemblyWalker(policy, allow, gameApi, framework, game, pe, facts).Run();
+            new AssemblyWalker(policy, allow, gameApi, framework, game, pe, facts, gameInlineArrays, gameTypes).Run();
         } catch (Exception e) {
             // Deliberately broad: malformed metadata can fail in many ways, and any of them is a
             // finding (Full access) for this file, never a crash that loses the whole run.
@@ -72,8 +74,8 @@ internal sealed class Analyzer(Policy policy, Allowlist allow, IReadOnlyDictiona
         uint magic = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
         if (magic == 0x7F454C46) return true;  // ELF
         if (magic is 0xFEEDFACE or 0xFEEDFACF or 0xCEFAEDFE or 0xCFFAEDFE) return true;  // Mach-O, 32 or 64 bit, either byte order
-        // A universal (fat) Mach-O. Java class files share the magic: not .NET assemblies either, and
-        // counted the same.
-        return magic is 0xCAFEBABE or 0xCAFEBABF or 0xBEBAFECA;
+        // A universal (fat) Mach-O, 32 or 64 bit, either byte order (as extraction's CodeMagic). Java
+        // class files share the magic: not .NET assemblies either, and counted the same.
+        return magic is 0xCAFEBABE or 0xCAFEBABF or 0xBEBAFECA or 0xBFBAFECA;
     }
 }

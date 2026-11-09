@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace DarkMatter.Pipeline.Index;
 
@@ -24,7 +25,7 @@ internal sealed class RateLimitException(string message, DateTimeOffset? reset) 
 /// short wait, else it stops the run. Downloads stream to disk with a size limit counted in bytes
 /// received, and a read that stalls for the timeout fails.
 /// </summary>
-internal sealed class Http : IDisposable {
+internal sealed partial class Http : IDisposable {
     // A generic client name: nothing that identifies the user or the machine.
     const string UserAgent = "darkmatter-pipeline";
     static readonly TimeSpan MaxRateLimitWait = TimeSpan.FromSeconds(60);
@@ -127,12 +128,19 @@ internal sealed class Http : IDisposable {
         }
     }
 
-    /// <summary>The message of <paramref name="e"/> and of the exceptions inside it ("could not connect: certificate rejected").</summary>
+    /// <summary>
+    /// The message of <paramref name="e"/> and of the exceptions inside it ("could not connect: certificate
+    /// rejected"), with the user name and password removed from any URL in it: .NET names the proxy it
+    /// went through, credentials included, and these messages end up in run documents and reports.
+    /// </summary>
     static string Describe(Exception e) {
         var parts = new List<string>();
-        for (Exception? x = e; x != null; x = x.InnerException) parts.Add(x.Message.TrimEnd('.'));
+        for (Exception? x = e; x != null; x = x.InnerException) parts.Add(Credentials().Replace(x.Message.TrimEnd('.'), "$1"));
         return string.Join(": ", parts.Distinct());
     }
+
+    [GeneratedRegex(@"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s'""]+@")]
+    private static partial Regex Credentials();
 
     /// <summary>A rate-limit response: 403 or 429 with no calls left or a Retry-After header.</summary>
     static (TimeSpan? Wait, DateTimeOffset? Reset)? RateLimit(HttpResponseMessage response) {

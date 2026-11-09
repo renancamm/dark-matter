@@ -20,7 +20,8 @@ internal static class Program {
               --policy FILE        policy file (default: the built-in policy/policy.jsonc)
               --json FILE          also write the results as JSON
               --facts FILE         also write the per-file analysis facts as JSON
-              -v, --verbose        show the evidence behind each label and reason
+              -v, --verbose        show the evidence behind each label and reason (the first 20;
+                                   --json has all of it)
 
           darkmatter profile --out FILE [--policy FILE] FILE...
               Write a game-API capability map for the methods of the given game assemblies.
@@ -31,6 +32,10 @@ internal static class Program {
 
           darkmatter policy
               Print the built-in policy.
+
+          darkmatter version [--policy FILE]
+              Print the tool, runtime and policy versions results are stamped with, and the
+              profile format `profile` writes (profileFormat), as JSON.
         """;
 
     static int Main(string[] args) {
@@ -39,6 +44,7 @@ internal static class Program {
                 "analyze" => AnalyzeCommand.Run(args[1..]),
                 "profile" => ProfileCommand.Run(args[1..]),
                 "policy" => Print(Policy.EmbeddedText()),
+                "version" => VersionCommand(args[1..]),
                 "-h" or "--help" or "help" => Print(Usage),
                 _ => Fail(Usage),
             };
@@ -51,6 +57,17 @@ internal static class Program {
         } catch (KeyNotFoundException e) {
             return Fail("error: input file is missing a required field: " + e.Message);
         }
+    }
+
+    static int VersionCommand(IReadOnlyList<string> argv) {
+        var o = Options.Parse(argv, ["--policy"], []);
+        if (o.Positional.Count > 0) throw new UsageException($"unexpected argument {o.Positional[0]}");
+        var policy = Policy.Load(o.Get("--policy") is { } pp ? Inputs.Require(pp) : null);
+        // The stamp, and the profile format this build writes and reads: darkmatter-pipeline checks
+        // the profiles it keeps against it rather than keep its own copy of the number.
+        var output = JsonSerializer.SerializeToNode(JsonOutput.Stamp(policy), JsonOutput.Options)!.AsObject();
+        output["profileFormat"] = Inputs.ProfileFormat;
+        return Print(output.ToJsonString(JsonOutput.Options));
     }
 
     static int Print(string s) {

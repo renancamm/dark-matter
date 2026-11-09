@@ -11,9 +11,11 @@
     <Project Path="fixtures/game-api/mod/game-api-mod.csproj" />
     <Project Path="fixtures/game-api/mod-exempt/game-api-mod-exempt.csproj" />
     <Project Path="fixtures/game-api/mod-full/game-api-mod-full.csproj" />
+    <Project Path="fixtures/game-api/mod-gaps/game-api-mod-gaps.csproj" />
     <Project Path="fixtures/game-api/stub/game-api-stub.csproj" />
     <Project Path="fixtures/harmony-patch/mod/harmony-patch-mod.csproj" />
     <Project Path="fixtures/harmony-patch/stub/harmony-patch-stub.csproj" />
+    <Project Path="fixtures/il-probes/il-probes.csproj" />
     <Project Path="fixtures/impersonation/impersonation.csproj" />
     <Project Path="fixtures/labels/labels.csproj" />
     <Project Path="fixtures/library-propagation/lib/library-propagation-lib.csproj" />
@@ -24,6 +26,7 @@
     <Project Path="fixtures/raw-memory/safe/raw-memory-safe.csproj" />
     <Project Path="fixtures/raw-memory/unsafe/raw-memory-unsafe.csproj" />
     <Project Path="fixtures/reflection/reflection.csproj" />
+    <Project Path="fixtures/report-markup/report-markup.csproj" />
     <Project Path="fixtures/shell-open/link/shell-open-link.csproj" />
     <Project Path="fixtures/shell-open/program/shell-open-program.csproj" />
   </Folder>

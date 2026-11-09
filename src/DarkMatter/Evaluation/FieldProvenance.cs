@@ -22,6 +22,10 @@ internal sealed class FieldProvenance {
     readonly Func<string, HashSet<string>, bool, (HashSet<HeldType> Held, string? Why)> trace;
     readonly Func<string, HashSet<string>, HashSet<string>?> names;
     readonly Func<string, bool> written;
+    readonly Func<string, bool> reflected;
+
+    // How ReflectionApis.MemberNames names the methods of a property or event a lookup finds by its name.
+    static readonly string[] AccessorPrefixes = ["get_", "set_", "add_", "remove_", "raise_"];
 
     /// <summary>
     /// Whether fields of a type can be written through reflection: directly (FieldInfo.SetValue on a
@@ -29,6 +33,13 @@ internal sealed class FieldProvenance {
     /// a bounded write reaches, or by a write whose type is not known.
     /// </summary>
     public bool FieldsWritten(string type) => written(type);
+
+    /// <summary>
+    /// Whether reflection on the analyzed code's own types can reach the method <paramref name="key"/> (a node
+    /// key, "Assembly|Type::Name"): a lookup can return it (see the reach below), or a type of the analyzed code
+    /// is found by a name built at run time. It is then called with any arguments (MethodBase.Invoke).
+    /// </summary>
+    public bool ReachedByReflection(string key) => reflected(key);
 
     /// <summary>The types and members a node can hold, or why that cannot be traced.</summary>
     public (IReadOnlySet<HeldType> Held, string? Why) Held(string node) => trace(node, [], true);
@@ -47,7 +58,9 @@ internal sealed class FieldProvenance {
         var written = new HashSet<string>(StringComparer.Ordinal);  // types whose fields are written through reflection
         var byKey = new Dictionary<string, List<MethodFacts>>(StringComparer.OrdinalIgnoreCase);
         var strings = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var called = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // methods some analyzed code calls
         foreach (var m in methods) {
+            called.UnionWith(m.Callees);
             foreach (var (n, values) in m.StringArguments) Set(strings, n).UnionWith(values);
             foreach (var (f, held) in m.ReflectionStores) Set(stores, f).UnionWith(held);
             foreach (var (f, sources) in m.FieldCopies) Set(copies, f).UnionWith(sources);
@@ -68,34 +81,101 @@ internal sealed class FieldProvenance {
         // they can be called with any arguments (through Invoke's object[], a delegate made from a
         // MethodInfo, a patch that rewrites arguments). All of them when a type of the analyzed code
         // is reached by a name built at run time.
-        var reflectedTypes = new HashSet<string>(StringComparer.Ordinal);
+        // Per type, the member names a lookup on it can return (null: any member), as
+        // ReflectionApis.MemberNames gives them and ReflectionApis.MemberMatches compares them (ignoring
+        // case; a name ending in '*' is a prefix; "/Name" is every member of a nested type of that name).
+        // H7 ("F1"): before, every method of a reached type counted, whatever the lookup could return.
+        var reach = new Dictionary<string, HashSet<string>?>(StringComparer.Ordinal);
+        // Lookups whose member name is a string parameter: they reach what every call passes, which
+        // depends on which methods are reached (below, to a fixpoint).
+        var pending = new HashSet<(string Type, string NameNode, string Lookup)>();
+        // The properties and events each method belongs to, by the metadata (an accessor need not be
+        // named get_X or set_X). If a type's could not be read, any lookup reaches any member.
+        var accessors = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var a in analyzed)
+            foreach (var (m, of) in a.Accessors) Set(accessors, m).UnionWith(of);
+        bool coarse = analyzed.Any(a => a.AccessorsUnread.Count > 0);
         bool anyOwnType = false;
-        void Reflected(string type, string? assembly) {
-            if (type == "*") { anyOwnType |= assembly != null && access.IsOwnAssembly(assembly); return; }
-            if (access.IsOwn(type, assembly)) reflectedTypes.Add(type);
+        // Records a lookup on a type; true when that reaches something it did not before. derived: the
+        // type or any type derived from it (the run-time type of a value of that declared type): the
+        // analyzed code's types that derive from it are reached too, also when it is not one of that code's
+        // own (a game type the mod derives from, found through GetType() of a game-typed value: H7b), by
+        // the rule in Related below (a type is reached when a type it derives from is).
+        bool Reflected(string type, string? assembly, IReadOnlyList<string>? members = null, string? nameNode = null, string? lookup = null, bool derived = false) {
+            if (type == "*") {
+                bool before = anyOwnType;
+                anyOwnType |= assembly != null && access.IsOwnAssembly(assembly);
+                return anyOwnType != before;
+            }
+            if (!derived && !access.IsOwn(type, assembly)) return false;
+            if (members == null && nameNode != null && lookup != null && !coarse) {
+                bool added = pending.Add((type, nameNode, lookup));
+                return reach.TryAdd(type, new(StringComparer.Ordinal)) || added;
+            }
+            return AddReach(type, members);
+        }
+        bool AddReach(string type, IReadOnlyList<string>? members) {
+            if (members == null || coarse) {
+                if (reach.TryGetValue(type, out var cur) && cur == null) return false;
+                reach[type] = null;
+                return true;
+            }
+            if (!reach.TryGetValue(type, out var set)) reach[type] = set = new(StringComparer.Ordinal);
+            if (set == null) return false;
+            bool changed = false;
+            foreach (var n in members) changed |= set.Add(n);
+            return changed;
         }
         foreach (var m in methods) {
-            foreach (var r in m.ReflectedTypes) Reflected(r.Type, r.Assembly);
-            foreach (var b in m.BoundedReflection) Reflected(b.Type, b.Assembly);
+            foreach (var r in m.ReflectedTypes) Reflected(r.Type, r.Assembly, r.Members, r.NameNode, r.Lookup);
+            foreach (var b in m.BoundedReflection) Reflected(b.Type, b.Assembly, derived: true);
         }
-        foreach (var t in analyzed.SelectMany(a => a.PatchTargets).Where(t => t.Type != null)) Reflected(t.Type!, t.Assembly);
+        foreach (var t in analyzed.SelectMany(a => a.PatchTargets).Where(t => t.Type != null)) Reflected(t.Type!, t.Assembly, t.Member is { } pm ? [pm] : null);
 
+        reflected = key => byKey.TryGetValue(key, out var rms) && (anyOwnType || rms.Any(x => Reached(x.Name)));
         // Whether a method is called by code the check does not see, with arguments of its choosing.
         string? CalledFromOutside(List<MethodFacts> ms) {
             if (ms.FirstOrDefault(x => x.CalledFromOutside != null) is { } m) return $"the method {m.CalledFromOutside}";
             if (anyOwnType) return "the method can be reached by reflection on a type found by a name built at run time";
-            foreach (var x in ms) {
-                int sep = x.Name.LastIndexOf("::", StringComparison.Ordinal);
-                if (sep > 0 && Related(x.Name[..sep])) return "the method can be reached by reflection";
-            }
+            foreach (var x in ms) if (Reached(x.Name)) return "the method can be reached by reflection";
             return null;
         }
+        // Whether a lookup can return the method "Type::Name": by its name, or by the name of a property
+        // or event it belongs to (whatever the method is called).
+        bool Reached(string method) {
+            if (reach.Count == 0) return false;
+            int sep = method.LastIndexOf("::", StringComparison.Ordinal);
+            if (sep <= 0) return false;
+            var simple = method[(sep + 2)..];
+            if (Related(method[..sep], n => ReflectionApis.MemberMatches(n, simple))) return true;
+            if (accessors.TryGetValue(method, out var of))
+                foreach (var o in of) {
+                    int osep = o.LastIndexOf("::", StringComparison.Ordinal);
+                    var name = o[(osep + 2)..];
+                    if (Related(o[..osep], n => ReflectionApis.MemberMatches(n, name) || AccessorPrefixes.Any(p => ReflectionApis.MemberMatches(n, p + name))))
+                        return true;
+                }
+            return false;
+        }
         // A type reached by reflection, or one it derives from or that derives from it (reflection
-        // on a type finds inherited members; a type known up to its derived types is any of them).
-        bool Related(string type) {
-            if (reflectedTypes.Count == 0) return false;
-            if (Ancestors(type).Any(reflectedTypes.Contains)) return true;
-            return reflectedTypes.Any(r => Ancestors(r).Contains(type));
+        // on a type finds inherited members; a type known up to its derived types is any of them), or a
+        // type nested in one of those: the walker counts a nested type found by GetNestedType(s) or
+        // GetMember as the type it was found from (H3, H1a-review H5), so a name looked up on the outer
+        // type is one on the nested type too, and "/Name" reaches every member of the nested type Name
+        // (and of the types nested in it). names: whether a reached name finds the member.
+        bool Related(string type, Func<string, bool> names) {
+            for (var t = type; ; t = t[..t.LastIndexOf('/')]) {
+                // The nested type, under t, that holds the member ("" for a member of t itself).
+                var below = t.Length < type.Length ? type[(t.Length + 1)..] : "";
+                var segment = below.Split('/')[0];
+                bool Hit(string r) => reach.TryGetValue(r, out var set) && (set == null || set.Any(n =>
+                    n.StartsWith(ReflectionApis.NestedPrefix, StringComparison.Ordinal)
+                        ? segment.Length > 0 && ReflectionApis.MemberMatches(n[ReflectionApis.NestedPrefix.Length..], segment)
+                        : names(n)));
+                if (Ancestors(t).Any(Hit)) return true;
+                if (reach.Keys.Any(r => Hit(r) && Ancestors(r).Contains(t))) return true;
+                if (t.LastIndexOf('/') <= 0) return false;
+            }
         }
         IEnumerable<string> Ancestors(string type) {
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -119,9 +199,22 @@ internal sealed class FieldProvenance {
             // Members looked up on the types a node holds: those types, as members.
             if (node.StartsWith(Nodes.MemberPrefix, StringComparison.Ordinal)) {
                 var (of, ofWhy) = Trace(node[Nodes.MemberPrefix.Length..], visiting, checkWritten);
-                return ([.. of.Select(h => h with { Member = true })], ofWhy);
+                return ([.. of.Select(h => h with { Member = true, Value = null })], ofWhy);
             }
             var held = new HashSet<HeldType>();
+            // The declared types of the members a node holds, or the run-time types of values read through them (D5,
+            // D6): known for a member found by a constant name on exactly one type whose declared type the walker
+            // knew (HeldType.Value), of the kind the read is made on. Anything else it holds is not followed.
+            if (Nodes.TypeOfParts(node) is var (kind, value, source)) {
+                var (of, ofWhy) = Trace(source, visiting, checkWritten);
+                if (ofWhy != null) return (held, $"is not known: {Nodes.Describe(source)} {ofWhy}");
+                foreach (var h in of) {
+                    if (!h.Member || h.Bounded || h.Value is not { } v || v.Kind != kind)
+                        return (held, $"is not known: {Nodes.Describe(source)} can hold a member whose declared type the check does not know");
+                    held.Add(new(v.Type, v.Asm, false, Bounded: value));
+                }
+                return (held, null);
+            }
             if (!visiting.Add(node)) return (held, null);  // a cycle adds no new values
             var key = Nodes.Key(node);
             int bar = key.IndexOf('|', StringComparison.Ordinal), sep = key.IndexOf("::", StringComparison.Ordinal);
@@ -130,6 +223,17 @@ internal sealed class FieldProvenance {
                 if (!byKey.TryGetValue(key, out var ms)) return (held, "belongs to a method the check did not find");
                 if (CalledFromOutside(ms) is { } why) return (held, $"can be any value: {why}");
                 if (untracked.Contains(Nodes.Arg(key, -1))) return (held, "can be any value: the method is used as a delegate");
+                if (untracked.Contains(node)) return (held, "is also given a value the check cannot trace");
+            } else if (node.StartsWith(Nodes.InstancePrefix, StringComparison.Ordinal)) {
+                // What Harmony passes as __instance (D7): bounded by the patch target only while Harmony is the only
+                // caller this mod has. A patch method is called from outside by design (CalledFromOutside); its own
+                // code calling it, taking it as a delegate or reaching it by reflection (to patch another member
+                // with it, say) can give it any object.
+                if (!byKey.TryGetValue(key, out var ms)) return (held, "belongs to a method the check did not find");
+                if (called.Contains(key)) return (held, "can be any object: the mod's own code calls the patch method");
+                if (untracked.Contains(Nodes.Arg(key, -1))) return (held, "can be any object: the patch method is used as a delegate");
+                if (anyOwnType) return (held, "can be any object: the patch method can be reached by reflection on a type found by a name built at run time");
+                if (ms.Any(x => Reached(x.Name))) return (held, "can be any object: the patch method can be reached by reflection");
                 if (untracked.Contains(node)) return (held, "is also given a value the check cannot trace");
             } else if (node.StartsWith(Nodes.ReturnPrefix, StringComparison.Ordinal)) {
                 if (!byKey.TryGetValue(key, out var ms)) return (held, "belongs to a method the check did not find");
@@ -153,8 +257,8 @@ internal sealed class FieldProvenance {
         trace = Trace;
 
         // The strings a string parameter is given, from every call: null when it can be any string
-        // (the method can be called from outside, or is given one the check does not trace). A
-        // method nobody calls looks nothing up.
+        // (the method can be called from outside, is given one the check does not trace, or is called
+        // where no value was recorded). A method nobody calls looks nothing up.
         HashSet<string>? Names(string node, HashSet<string> visiting) {
             var result = new HashSet<string>(StringComparer.Ordinal);
             if (!visiting.Add(node)) return result;  // a cycle adds no new names
@@ -162,7 +266,9 @@ internal sealed class FieldProvenance {
             int bar = key.IndexOf('|', StringComparison.Ordinal);
             if (bar < 0 || !own.Contains(key[..bar]) || !byKey.TryGetValue(key, out var ms)) return null;
             if (CalledFromOutside(ms) != null || untracked.Contains(Nodes.Arg(key, -1))) return null;
-            foreach (var v in strings.TryGetValue(node, out var values) ? values : []) {
+            // A call the check saw that recorded no string for the parameter: what it passes is not known.
+            if (!strings.TryGetValue(node, out var values)) return called.Contains(key) ? null : result;
+            foreach (var v in values) {
                 if (v.StartsWith('=')) { if (v.Length > 1) result.Add(v[1..]); continue; }  // null names nothing (the lookup throws)
                 if (!v.StartsWith('@') || Names(v[1..], visiting) is not { } more) return null;
                 result.UnionWith(more);
@@ -171,11 +277,21 @@ internal sealed class FieldProvenance {
         }
         names = Names;
 
-        // Types the traced nodes hold are reached by reflection too (see above).
-        foreach (var m in methods)
-            foreach (var r in m.FieldReflection)
-                if (Trace(r.Node, [], false) is { Why: null } t)
-                    foreach (var h in t.Held.Where(h => !h.Member)) Reflected(h.Type, h.Assembly);
+        // Lookups by a name parameter reach the members every call names, and the types the traced
+        // nodes hold are reached by reflection too (see above), by the lookup made on them. Both depend
+        // on which methods are reached (a method reached by reflection can be given any name or type),
+        // so they are iterated from "nothing reached by them" until nothing changes: the first time a
+        // method is reached by reflection at run time, the lookup that found it ran in code reached in
+        // another way, so every way in must be inside this loop (H1a-review, F1 guard 1). Reach only
+        // grows, so it ends.
+        for (bool changed = true; changed;) {
+            changed = false;
+            foreach (var (pt, pn, pl) in pending.ToList()) changed |= AddReach(pt, Members(null, pn, pl));
+            foreach (var m in methods)
+                foreach (var r in m.FieldReflection)
+                    if (Trace(r.Node, [], false) is { Why: null } t)
+                        foreach (var h in t.Held.Where(h => !h.Member)) changed |= Reflected(h.Type, h.Assembly, r.Members, r.NameNode, r.Lookup, h.Bounded);
+        }
 
         // Writes through a traced node reach the fields of the types it holds. An untraced one
         // is already unresolved in Resolve.
@@ -215,7 +331,8 @@ internal sealed class FieldProvenance {
                     if (r.Invokes) unresolved.Add((m, $"{r.Detail}  ({Nodes.Describe(r.Node)} {why})"));
                     continue;
                 }
-                foreach (var h in held) {
+                // (A member's declared type, HeldType.Value, does not change what reaching it does: one line per member.)
+                foreach (var h in held.Select(h => h with { Value = null }).ToHashSet()) {
                     // A type or member known only up to its derived types (or its assembly): bounded
                     // when that is the game's or the mod's code, unresolved otherwise.
                     if (h.Bounded && r.Invokes) {
@@ -225,7 +342,7 @@ internal sealed class FieldProvenance {
                     }
                     // Silence on purpose for a member: it was accounted for where it was looked up.
                     if (h.Member || h.Type == "*") continue;
-                    foreach (var (cap, detail) in access.Reach(h.Type, h.Assembly, Members(r.Members, r.NameNode, r.Lookup), TypeUse.Reflection, frameworkCaps: true, $"{h.Type}  (via {Nodes.Describe(r.Node)})  <-  {m.Name}"))
+                    foreach (var (cap, detail) in access.Reach(h.Type, h.Assembly, Members(r.Members, r.NameNode, r.Lookup), TypeUse.Reflection, frameworkCaps: true, $"{h.Type}  (via {Nodes.Describe(r.Node)})  <-  {m.Name}", derived: h.Bounded))
                         caps.Add((m, new(cap, detail, Origin.Reflection)));
                 }
             }

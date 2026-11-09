@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>darkmatter</AssemblyName>
     <RootNamespace>DarkMatter</RootNamespace>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="../../policy/policy.jsonc" LogicalName="policy.jsonc" />

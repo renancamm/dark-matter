@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace DarkMatter.Pipeline;
 
@@ -35,6 +36,14 @@ internal static class Text {
         // Paths and names are written as they are (non-ASCII escaped, as Python's json module does).
         Encoder = JavaScriptEncoder.Default,
     };
+
+    /// <summary>
+    /// Parses a JSON file the pipeline keeps in its state folder. A duplicate key is a
+    /// <see cref="JsonException"/> here; a plain <see cref="JsonNode.Parse(ReadOnlySpan{byte}, JsonNodeOptions?, JsonDocumentOptions)"/>
+    /// accepts it and throws an <see cref="ArgumentException"/> when the object is first read.
+    /// </summary>
+    public static JsonNode? ParseStored(byte[] bytes) =>
+        JsonNode.Parse(bytes, documentOptions: new JsonDocumentOptions { AllowDuplicateProperties = false });
 
     /// <summary>Writes <paramref name="value"/> as indented JSON, through a temporary file so a failed run leaves no half-written output.</summary>
     public static void WriteJson(string path, object value) {

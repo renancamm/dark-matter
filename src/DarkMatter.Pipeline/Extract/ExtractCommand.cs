@@ -36,9 +36,9 @@ internal static class ExtractCommand {
         var o = Options.Parse(argv, Valued, []);
         if (o.Positional.Count != 2) throw new UsageException("extract needs a downloads folder and an extraction folder");
         var manifest = o.Get("--manifest") ?? throw new UsageException("extract needs --manifest FILE");
-        var maxDepth = (int)Math.Min(o.Number("--max-depth", 3, 0), 64);
-        var maxBytes = o.Number("--max-bytes", 2L << 30, 1);
-        var maxFiles = o.Number("--max-files", 100_000, 1);
+        var maxDepth = (int)Math.Min(o.Number("--max-depth", Limits.Default.MaxDepth, 0), 64);
+        var maxBytes = o.Number("--max-bytes", Limits.Default.MaxBytes, 1);
+        var maxFiles = o.Number("--max-files", Limits.Default.MaxFiles, 1);
         var (downloads, extracted) = (o.Positional[0], o.Positional[1]);
         if (!Directory.Exists(downloads)) throw new UsageException($"folder not found: {downloads}");
         // Each mod's extraction folder is deleted and recreated: it must not be the downloads.
@@ -55,7 +55,8 @@ internal static class ExtractCommand {
                 Console.Error.WriteLine($"  skipped folder {Text.Quote(mid)}: not a mod (name starts with a dot)");
                 continue;
             }
-            var mod = ExtractMod(source, mid, Path.Join(extracted, mid), maxDepth, maxBytes, maxFiles);
+            var assets = Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal).Select(p => (p, Path.GetFileName(p))).ToList();
+            var mod = ExtractAssets(assets, mid, Path.Join(extracted, mid), new Limits(maxDepth, maxBytes, maxFiles));
             mods[mid] = mod;
             Console.WriteLine($"{Text.Printable(mid)}: {mod.Files.Count} code file(s)"
                 + (mod.Unextracted.Count > 0 ? $", {mod.Unextracted.Count} unextracted" : "")
@@ -67,32 +68,121 @@ internal static class ExtractCommand {
 
     static string FullFolder(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)) + Path.DirectorySeparatorChar;
 
-    static ManifestMod ExtractMod(string source, string mid, string dest, int maxDepth, long maxBytes, long maxFiles) {
+    /// <summary>
+    /// Extraction limits per mod: nesting depth, bytes written, files written. A mod over a limit
+    /// counts as not extracted (Full access), so <c>scan</c> puts the limits in its scan key and stamp.
+    /// The byte limit bounds the disk one mod can fill (extracted trees are kept); the counted bytes,
+    /// the file count and the depth are what stop archive bombs.
+    /// </summary>
+    internal sealed record Limits(int MaxDepth, long MaxBytes, long MaxFiles) {
+        public static readonly Limits Default = new(3, 4L << 30, 100_000);
+    }
+
+    /// <summary>A fresh, empty extraction folder for one mod (an existing one is deleted first).</summary>
+    static ModTree FreshTree(string dest, Limits limits) {
         if (Directory.Exists(dest) || File.Exists(dest)) {
             var info = new DirectoryInfo(dest);
             if (info.LinkTarget != null || !info.Exists) throw new UsageException($"{dest} exists and is not a folder; remove it first");
             Directory.Delete(dest, recursive: true);
         }
         Directory.CreateDirectory(dest);
-        var tree = new ModTree(dest, maxBytes, maxFiles);
+        return new ModTree(dest, limits.MaxBytes, limits.MaxFiles);
+    }
+
+    /// <summary>
+    /// Whether an extraction error came from the file system (a full disk, a permission, a file in
+    /// use) rather than from what the archive holds: such an error may not happen again. Errors the
+    /// archive's contents cause are <see cref="ArchiveException"/>, <see cref="InvalidDataException"/>
+    /// and the like; a truncated archive is <see cref="EndOfStreamException"/>.
+    /// </summary>
+    internal static bool IsEnvironmentError(Exception e) =>
+        e is UnauthorizedAccessException || (e is IOException && e is not EndOfStreamException);
+
+    /// <summary>
+    /// Extracts one mod's downloaded assets (<paramref name="assets"/>: a file and the name it is
+    /// extracted under) into <paramref name="dest"/>, and returns its manifest entry. If
+    /// <paramref name="environmentErrors"/> is given, it gets the file-system errors
+    /// (<see cref="IsEnvironmentError"/>) that made something count as not extracted.
+    /// </summary>
+    internal static ManifestMod ExtractAssets(IReadOnlyList<(string Path, string Name)> assets, string mid, string dest, Limits limits, List<string>? environmentErrors = null) {
+        var tree = FreshTree(dest, limits);
         var unextracted = new List<string>();
         void Warn(string message) => Console.Error.WriteLine($"  {Text.Printable(mid)}: {message}");
 
-        foreach (var path in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal)) {
-            var asset = Path.GetFileName(path);
+        foreach (var (path, asset) in assets) {
             try {
                 if (ExtractAsset(path, asset, tree, Warn) is { } problem) unextracted.Add(problem);
             } catch (Exception e) {
                 // Whatever went wrong with a hostile file, the result is the same: not extracted.
                 unextracted.Add(asset);
                 Warn($"failed to extract {Text.Quote(asset)}: {e.Message}");
+                Note(environmentErrors, e, asset);
             }
         }
+        return Finish(tree, dest, unextracted, limits, Warn, environmentErrors);
+    }
+
+    static void Note(List<string>? environmentErrors, Exception e, string what) {
+        if (environmentErrors != null && IsEnvironmentError(e)) environmentErrors.Add($"{Text.Printable(what)}: {e.Message}");
+    }
+
+    /// <summary>
+    /// Copies a folder (a mod as it is installed, or a build output) into <paramref name="dest"/> with
+    /// the same rules as an archive: every name is checked, links and other non-regular files are not
+    /// copied and make the folder count as not extracted, and archives in it are expanded.
+    /// </summary>
+    internal static ManifestMod CopyFolder(string source, string mid, string dest, Limits limits, List<string>? environmentErrors = null) {
+        var tree = FreshTree(dest, limits);
+        var unextracted = new List<string>();
+        void Warn(string message) => Console.Error.WriteLine($"  {Text.Printable(mid)}: {message}");
+        var root = Path.GetFullPath(source);
+        void Copy(string folder) {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(folder).Order(StringComparer.Ordinal)) {
+                var rel = Path.GetRelativePath(root, entry);
+                var info = new FileInfo(entry);
+                if (info.LinkTarget != null) {
+                    unextracted.Add(rel);
+                    Warn($"{Text.Quote(rel)} is a link; not copied");
+                    continue;
+                }
+                if (Directory.Exists(entry)) {
+                    Copy(entry);
+                    continue;
+                }
+                var why = EntryNames.Check(rel, directory: false, out var parts, out var renamed) ?? (info.Exists ? null : "not a regular file");
+                if (why != null) {
+                    unextracted.Add(rel);
+                    Warn($"cannot copy {Text.Quote(rel)}: {why}");
+                    continue;
+                }
+                tree.ShowRenames(renamed, Warn);
+                try {
+                    if (!tree.Claim(parts, directory: false)) {
+                        unextracted.Add(rel);
+                        Warn($"cannot copy {Text.Quote(rel)}: another file has the same name (ignoring case)");
+                        continue;
+                    }
+                    using var input = new FileStream(entry, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    tree.Write(parts, input);
+                } catch (Exception e) {
+                    unextracted.Add(rel);
+                    Warn($"cannot copy {Text.Quote(rel)}: {e.Message}");
+                    Note(environmentErrors, e, rel);
+                }
+            }
+        }
+        Copy(root);
+        return Finish(tree, dest, unextracted, limits, Warn, environmentErrors);
+    }
+
+    static ManifestMod Finish(ModTree tree, string dest, List<string> unextracted, Limits limits, Action<string> warn, List<string>? environmentErrors) {
+        int maxDepth = limits.MaxDepth;
         try {
-            unextracted.AddRange(ExpandNested(tree, maxDepth, Warn));
+            unextracted.AddRange(ExpandNested(tree, maxDepth, warn, environmentErrors));
         } catch (Exception e) {
             unextracted.Add("(nested archives)");
-            Warn($"failed to expand nested archives: {e.Message}");
+            warn($"failed to expand nested archives: {e.Message}");
+            Note(environmentErrors, e, "(nested archives)");
         }
 
         var files = new List<ManifestFile>();
@@ -121,12 +211,19 @@ internal static class ExtractCommand {
             ? (ArchiveKind.None, "")  // a code file is copied; if it is also an archive, the nested pass opens it
             : Archives.Detect(path);
         if (kind == ArchiveKind.None) {
-            if (!tree.Claim([asset], directory: false)) {
+            // The asset's name is checked like an entry's (a download, or a local file, may be named anything).
+            var why = EntryNames.Check(asset, directory: false, out var parts, out var renamed) ?? (parts.Length == 1 ? null : "not a single file name");
+            if (why != null) {
+                warn($"cannot copy {Text.Quote(asset)}: {why}");
+                return asset;
+            }
+            tree.ShowRenames(renamed, warn);
+            if (!tree.Claim(parts, directory: false)) {
                 warn($"cannot copy {Text.Quote(asset)}: another file has the same name (ignoring case)");
                 return asset;
             }
             using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            tree.Write([asset], input);
+            tree.Write(parts, input);
             return null;
         }
         if (kind == ArchiveKind.Unsupported) {
@@ -167,7 +264,7 @@ internal static class ExtractCommand {
     /// level by level, up to <paramref name="maxDepth"/> levels. Returns the ones it could not
     /// extract completely, by path relative to the mod's folder.
     /// </summary>
-    static List<string> ExpandNested(ModTree tree, int maxDepth, Action<string> warn) {
+    static List<string> ExpandNested(ModTree tree, int maxDepth, Action<string> warn, List<string>? environmentErrors) {
         var unextracted = new List<string>();
         var done = new HashSet<string>(StringComparer.Ordinal);
         for (int depth = 1; depth <= maxDepth + 1; depth++) {
@@ -198,6 +295,7 @@ internal static class ExtractCommand {
                 } catch (Exception e) {
                     unextracted.Add(rel);
                     warn($"cannot extract nested archive {Text.Quote(rel)}: {e.Message}");
+                    Note(environmentErrors, e, rel);
                 }
             }
         }

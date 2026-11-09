@@ -30,13 +30,18 @@ internal sealed class Policy {
     /// <summary>Capabilities the analyzer produces itself rather than from a rule.</summary>
     public static readonly IReadOnlyList<string> Derived = [
         "shell-open", "shell-open-folder", "file-saves", "file-write-outside", "file-read-outside", "file-write-code",
+        // An XmlSerializer whose type is not fixed where it is made; and what the game's exemption passes
+        // on for one, kept at a mod's call only where the mod chooses the type.
+        "xml-serialization-open", "xml-serialization-game",
+        // The unsafe compile flag on its own (informational; the IL walk finds every unsafe construct).
+        "unsafe-code",
     ];
 
     /// <summary>Findings that are not capabilities; each needs an entry in one "fullAccess" group.</summary>
     public static readonly IReadOnlyList<string> Findings = [
         "unresolved-reflection", "bounded-reflection", "com-activation", "decode-failure", "unreadable-file",
         "native-binary", "unextracted-archive", "not-analyzed", "unclassified-reference", "unanalyzed-call",
-        "ships-script", "embedded-binary", "name-collision", "rewrite-outside-game",
+        "ships-script", "embedded-binary", "name-collision", "rewrite-outside-game", "missing-game-code",
     ];
 
     /// <summary>The pseudo-capability of a "safe" rule: the member needs no capability.</summary>
@@ -62,7 +67,8 @@ internal sealed class Policy {
     public required IReadOnlyDictionary<string, string> PathSources { get; init; }
     public required IReadOnlyList<Rule> UrlLoads { get; init; }
     public required int DocumentsFolder { get; init; }
-    public required Regex GameFolderLiteral { get; init; }
+    /// <summary>What follows the Documents folder in a path to the game's folder (case-sensitive).</summary>
+    public required Regex GameFolder { get; init; }
     public required Regex AbsolutePathLiteral { get; init; }
     public required IReadOnlyList<string> GameAssemblies { get; init; }
     public required IReadOnlyList<Exemption> GameExempt { get; init; }
@@ -70,7 +76,8 @@ internal sealed class Policy {
 
     readonly ConcurrentDictionary<string, Classification> cache = new(StringComparer.Ordinal);
 
-    internal sealed record Label(string Text, IReadOnlySet<string> Caps);
+    /// <summary>A label: its stable id (what results are keyed by), the text shown to the user, and the capabilities that give it.</summary>
+    internal sealed record Label(string Id, string Text, IReadOnlySet<string> Caps);
 
     /// <summary>A tier's name and one-line summary, shown to the user.</summary>
     internal sealed record TierText(string Name, string Summary);
@@ -98,9 +105,12 @@ internal sealed class Policy {
     /// <param name="Library">Allowlist name of the library ("0Harmony"); null for the game.</param>
     /// <param name="Pattern">Member pattern, same syntax as a capability rule (no parameter list or arity).</param>
     /// <param name="Caps">Capabilities or findings that are not passed on.</param>
-    /// <param name="As">A label capability passed on instead, or null.</param>
+    /// <param name="As">A label capability passed on instead (or a Full-access one the mod's call narrows), or null.</param>
     /// <param name="Reason">Why, for the reader of the policy.</param>
-    internal sealed record Exemption(string? Library, Rule Pattern, IReadOnlySet<string> Caps, string? As, string Reason);
+    /// <param name="AtCall">What is exempted is accounted for at the mod's direct call to the member (its
+    /// arguments are traced there): reached any other way (a delegate, a method handle, reflection, a
+    /// patch), the member is unresolved reflection at the mod.</param>
+    internal sealed record Exemption(string? Library, Rule Pattern, IReadOnlySet<string> Caps, string? As, string Reason, bool AtCall = false);
 
     /// <summary>The outcome of matching a member against every rule.</summary>
     /// <param name="Matched">A capability or safe rule matched; false means the policy says nothing about the member.</param>
@@ -201,7 +211,7 @@ internal sealed class Policy {
             FullAccess = fullAccess,
             Combinations = [.. root.GetProperty("fullAccessCombinations").EnumerateArray()
                 .Select(c => new Combination(Text(c.GetProperty("id")), Text(c.GetProperty("group")), Text(c.GetProperty("text")), [.. c.GetProperty("caps").EnumerateArray().Select(Text)]))],
-            Labels = [.. root.GetProperty("labels").EnumerateArray().Select(l => new Label(Text(l.GetProperty("text")), Set(l.GetProperty("caps"))))],
+            Labels = [.. root.GetProperty("labels").EnumerateArray().Select(l => new Label(Text(l.GetProperty("id")), Text(l.GetProperty("text")), Set(l.GetProperty("caps"))))],
             Informational = Set(root.GetProperty("informational")),
             FileKinds = Strings(fa.GetProperty("kinds")).ToDictionary(kv => kv.Key, kv => kv.Value switch {
                 "read" => FileOpKind.Read,
@@ -213,7 +223,7 @@ internal sealed class Policy {
             PathSources = Strings(fa.GetProperty("sources")),
             UrlLoads = [.. fa.GetProperty("urls").EnumerateArray().Select(u => Rule.Parse("url", Text(u)))],
             DocumentsFolder = fa.GetProperty("documentsFolder").GetInt32(),
-            GameFolderLiteral = new Regex(Text(fa.GetProperty("gameFolderLiteral")), RegexOptions.IgnoreCase),
+            GameFolder = new Regex(Text(fa.GetProperty("gameFolder"))),
             AbsolutePathLiteral = new Regex(Text(fa.GetProperty("absolutePathLiteral"))),
             GameAssemblies = [.. game.GetProperty("assemblies").EnumerateArray().Select(Text)],
             GameExempt = Exemptions(game.GetProperty("exempt"), false),
@@ -236,7 +246,8 @@ internal sealed class Policy {
                 Rule.Parse("exempt", member),
                 Set(x.GetProperty("caps")),
                 x.TryGetProperty("as", out var instead) ? Text(instead) : null,
-                Text(x.GetProperty("reason")))))];
+                Text(x.GetProperty("reason")),
+                x.TryGetProperty("atCall", out var atCall) && atCall.GetBoolean())))];
 
     /// <summary>
     /// Whether a capability or finding raises the tier on its own, to Full access (any group).
@@ -278,6 +289,13 @@ internal sealed class Policy {
         // Each reason is shown to the user on its own: two that read the same cannot be told apart.
         foreach (var text in this.Groups.SelectMany(g => g.Reasons.Values).GroupBy(t => t, StringComparer.Ordinal).Where(g => g.Count() > 1))
             errors.Add($"the reason text '{text.Key}' is used more than once in fullAccess");
+        // Results are keyed by label id: an id names one label, and reads as one (lowercase words and dashes).
+        foreach (var l in Labels) {
+            if (!Regex.IsMatch(l.Id, "^[a-z][a-z0-9]*(-[a-z0-9]+)*$")) errors.Add($"label id '{l.Id}' must be lowercase words joined by dashes");
+            if (string.IsNullOrWhiteSpace(l.Text)) errors.Add($"label '{l.Id}' has no text");
+        }
+        foreach (var id in Labels.GroupBy(l => l.Id, StringComparer.Ordinal).Where(g => g.Count() > 1)) errors.Add($"the label id '{id.Key}' is used more than once");
+        foreach (var text in Labels.GroupBy(l => l.Text, StringComparer.Ordinal).Where(g => g.Count() > 1)) errors.Add($"the label text '{text.Key}' is used more than once");
         foreach (var cap in labelled.Concat(Informational).Concat(FileKinds.Keys))
             if (!producible.Contains(cap)) errors.Add($"'{cap}' is referenced but no rule produces it");
         foreach (var c in Combinations) {
@@ -306,7 +324,9 @@ internal sealed class Policy {
             foreach (var cap in x.Caps)
                 if (!RaisesTier(cap) && !labelled.Contains(cap)) errors.Add($"{what} lists '{cap}', which is not a Full-access capability, finding or label capability");
             if (x.Library == null && x.Caps.Any(Findings.Contains)) errors.Add($"{what} lists a finding; game profiles carry capabilities only");
-            if (x.As != null && !labelled.Contains(x.As)) errors.Add($"{what} passes on '{x.As}' instead, which is not a label capability");
+            if (x.As != null && !labelled.Contains(x.As) && !(x.Library == null && RaisesTier(x.As) && !Findings.Contains(x.As)))
+                errors.Add($"{what} passes on '{x.As}' instead, which is not a label capability (or, for the game, a Full-access capability)");
+            if (x.AtCall && x.Library == null) errors.Add($"{what} is marked atCall, which only a trusted-library exemption can be");
             if (string.IsNullOrWhiteSpace(x.Reason)) errors.Add($"{what} gives no reason");
         }
         foreach (var t in Enum.GetValues<Tier>())
@@ -387,6 +407,20 @@ internal sealed class Policy {
     public Exemption? ExemptionFor(string? library, string member, string cap) =>
         (library == null ? GameExempt : LibraryExempt).FirstOrDefault(x =>
             x.Caps.Contains(cap) && string.Equals(x.Library, library, StringComparison.OrdinalIgnoreCase) && x.Pattern.Matches(member, null));
+
+    /// <summary>
+    /// Whether a trusted-library member's exemption is accounted for at the mod's direct call ("atCall"):
+    /// reached any other way, the arguments it checks at that call are not checked.
+    /// </summary>
+    /// <param name="library">Allowlist (assembly) name of the library.</param>
+    /// <param name="member">"Namespace.Type::Member".</param>
+    public bool CheckedAtCall(string library, string member) =>
+        LibraryExempt.Any(x => x.AtCall && string.Equals(x.Library, library, StringComparison.OrdinalIgnoreCase) && x.Pattern.Matches(member, null));
+
+    /// <summary>Whether some member of <paramref name="type"/> (or of a type nested in it) is <see cref="CheckedAtCall"/>.</summary>
+    public bool CheckedAtCallInType(string library, string type) =>
+        LibraryExempt.Any(x => x.AtCall && string.Equals(x.Library, library, StringComparison.OrdinalIgnoreCase)
+            && (x.Pattern.Matches(type + "::", null) || x.Pattern.Text.StartsWith(type + "::", StringComparison.Ordinal) || x.Pattern.Text.StartsWith(type + "/", StringComparison.Ordinal)));
 
     /// <summary>Whether an assembly name is one of the policy's fallback game assemblies ("Brutal.*" matches by prefix).</summary>
     public static bool MatchesName(IEnumerable<string> patterns, string name) =>
