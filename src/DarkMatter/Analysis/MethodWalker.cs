@@ -449,7 +449,7 @@ internal sealed partial class MethodWalker {
     // A collection handed to a member the walker does not model. Code outside this assembly (the
     // framework's Array.SetValue, IList.Add or Array.Copy, a library, the game) can put anything into
     // it: its elements are untraced. The mod's own code is analyzed, and an escape there only bounds
-    // them (see README, Known gaps).
+    // them (see docs/known-gaps.md).
     void Hand(Slot s, EntityHandle h, string name) {
         Lose(s, $"passed to {name}");
         if (assembly.ExternalAssemblyOf(h) == null) return;
@@ -1347,7 +1347,7 @@ internal sealed partial class MethodWalker {
 
         // A by-reference argument is written or read through by the callee, which trusts it to be
         // a managed reference (see Arg). The receiver of a value type's method is not checked here:
-        // a member reference does not say whether its type is a value type (see README, Known gaps).
+        // a member reference does not say whether its type is a value type (see docs/known-gaps.md).
         for (int i = 0; i < ps.Length; i++)
             if (ps[i].EndsWith('&') && !isHelper) RequireReference(args[i + self], $"by-reference argument {i} of {name}");
 
@@ -1647,7 +1647,7 @@ internal sealed partial class MethodWalker {
 
     // Values whose text has a digit or letter and no separator or dot of its own, whatever their value
     // (formatted without a format, or with a standard one such as "D4" or "N"): integers, booleans,
-    // GUIDs. A char can be "." or "/", and other types have their own ToString (see README, Known gaps,
+    // GUIDs. A char can be "." or "/", and other types have their own ToString (see docs/known-gaps.md,
     // for a culture whose number format the mod changes).
     static readonly HashSet<string> InertFormatted = [
         "System.Boolean", "System.Byte", "System.SByte", "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
@@ -2130,7 +2130,7 @@ internal sealed partial class MethodWalker {
     // holds is what it acts on. Lost because something untraced was put into it: unresolved. Lost
     // because code the walker does not follow had it, when it holds what a member lookup found:
     // bounded to the types looked up (that code may reorder or filter it; putting something else into
-    // it is the untraced case, seen where that code runs, see README Known gaps).
+    // it is the untraced case, seen where that code runs, see docs/known-gaps.md).
     void ElementTarget(Slot element, string what, bool writesFields) {
         if (StateOf(element) is not { } state) return;  // first pass: nothing is recorded
         if (state.Tainted != null || (state.Escaped != null && !state.Lookup)) {
@@ -2432,7 +2432,7 @@ internal sealed partial class MethodWalker {
         }
         // A type named as a type argument (Activator.CreateInstance<T>(), AccessTools.CreateInstance<T>(),
         // Traverse.Create<T>()) is reached like a typeof. A generic parameter is the caller's choice:
-        // new T() in generic code is not followed (see README, Known gaps).
+        // new T() in generic code is not followed (see docs/known-gaps.md).
         if (ReflectionApis.TypeArgumentTarget(name, sig) is { } targetMembers)
             foreach (var (targ, tasm) in assembly.MethodTypeArgumentTypes(h)) {
                 if (targ.StartsWith('!')) continue;
@@ -2526,7 +2526,7 @@ internal sealed partial class MethodWalker {
 
     // Traverse.Create(object) and new Traverse(object) start from the object's run-time type: for an
     // object of a declared class or struct, that type (exactly, for a new or boxed one) or a type derived
-    // from it, as for GetType (H7, under the same declared-type assumption: README Known gaps). Not for
+    // from it, as for GetType (H7, under the same declared-type assumption: docs/known-gaps.md). Not for
     // a Type or member passed as an object (Traverse walks the RuntimeType's own members), a value the
     // walker does not know, or one declared only as object, ValueType or Enum: null, not traced.
     static Slot? TraverseObjectType(string name, MethodSignature<string> sig, Slot a0) =>

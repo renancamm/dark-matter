@@ -24,7 +24,7 @@ and a trusted library without a profile for every version counts as not analyzed
 Archives are cached by their stamp hash, so each version downloads at most once.
 
 Reference copy of `darkmatter-pipeline build-allowlist`, which replaces it (same arguments).
-Kept until the C# command has been run against GitHub and compared; then delete this file.
+Kept until the C# command has run against the live index and been compared; then delete this file.
 """
 import argparse, hashlib, io, json, os, re, sys, time, urllib.request, zipfile
 

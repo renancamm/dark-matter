@@ -12,9 +12,9 @@ can be re-run to resume. Unauthenticated GitHub API calls are limited to 60 per 
 Downloaded files are untrusted. Nothing here extracts or runs them; see
 `darkmatter-pipeline extract`.
 
-Reference copy of `darkmatter-pipeline fetch-releases`, which replaces it (and downloads every
-asset, not only the types above). Kept until the C# command has been run against GitHub and
-compared; then delete this file.
+Fallback for `darkmatter-pipeline scan`, which replaces it: `scan` reads the content index's
+snapshot and downloads and verifies each release's archive itself. Kept until `scan` has
+downloaded from the live index once; then delete this file.
 """
 import argparse, json, os, re, sys, time, tomllib, urllib.request
 

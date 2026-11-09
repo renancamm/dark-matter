@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // C4, still flagged: a stackalloc initializer of struct elements. The compiler sizes the buffer with sizeof
 // (a counted buffer, not a constant byte size) and stores each element with stobj at offsets built from
-// sizeof, which the offset proof does not cover (README, Known gaps). "Reads or writes memory directly"
+// sizeof, which the offset proof does not cover (docs/known-gaps.md). "Reads or writes memory directly"
 // (Broad access), before and after.
 using System;
 

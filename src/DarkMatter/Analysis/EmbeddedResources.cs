@@ -49,8 +49,8 @@ internal static partial class EmbeddedResources {
     /// Windows program or library is also found anywhere inside the resource (a .resources set or
     /// any other container that stores it uncompressed), checked by its PE header so that random
     /// data does not match. A .NET single-file bundle is an app host program, so its leading bytes
-    /// already match. Compressed or encrypted payloads have no recognizable bytes (see the
-    /// README's known gaps).
+    /// already match. Compressed or encrypted payloads have no recognizable bytes (see
+    /// docs/known-gaps.md).
     /// </summary>
     public static string? Kind(ReadOnlySpan<byte> data) {
         // ELF also opens with "\x7FELF"; bzip2 with "BZh" and a block size digit.

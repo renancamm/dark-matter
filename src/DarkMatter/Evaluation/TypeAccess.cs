@@ -187,7 +187,7 @@ internal sealed class TypeAccess(Policy policy, Boundary boundary, IReadOnlySet<
     /// For a mod that rewrites game code (a Harmony transpiler): the capabilities a game exemption that
     /// names a type or member stops on <paramref name="type"/>'s members (<paramref name="members"/>, null
     /// for any), with evidence. Those exemptions assume the game's own code runs there; namespace-wide
-    /// ones (the engine's native and memory code) are not given back (see README, Known gaps). So does
+    /// ones (the engine's native and memory code) are not given back (see docs/known-gaps.md). So does
     /// the game-API map's "opens a web address or folder" (shell-open, shell-open-folder): starting a
     /// program, once the instructions can change.
     /// </summary>
@@ -380,7 +380,7 @@ internal sealed class TypeAccess(Policy policy, Boundary boundary, IReadOnlySet<
     /// interface (<see cref="Boundary.GameDerived"/>). Only what such a type adds: the members it shares with the
     /// declared type (that type's chain, and the framework type past it) were reached with it. The mod's own derived
     /// types are analyzed with the mod (and their methods count as reached, see FieldProvenance); a trusted library's
-    /// or another mod's type deriving from a game type is not followed (README, Known gaps).
+    /// or another mod's type deriving from a game type is not followed (docs/known-gaps.md).
     /// </summary>
     void GameDerived(string type, IReadOnlyList<string>? members, TypeUse use, string detail, List<(string, string)> result) {
         var covered = boundary.GameChain(type, out _).ToHashSet(StringComparer.Ordinal);
