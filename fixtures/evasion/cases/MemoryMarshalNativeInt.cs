@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // C2 near-miss: MemoryMarshal.Cast to a native integer. The runtime allows it (no reference), but a native int
 // holds addresses as often as numbers and is not plain data to the check, so this stays "Reads or writes
-// memory directly" (Full access).
+// memory directly" (Broad access).
 using System;
 using System.Runtime.InteropServices;
 

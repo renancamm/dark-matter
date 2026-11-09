@@ -57,7 +57,7 @@ internal sealed class Analyzer(Policy policy, Allowlist allow, IReadOnlyDictiona
             new AssemblyWalker(policy, allow, gameApi, framework, game, pe, facts, gameInlineArrays, gameTypes).Run();
         } catch (Exception e) {
             // Deliberately broad: malformed metadata can fail in many ways, and any of them is a
-            // finding (Full access) for this file, never a crash that loses the whole run.
+            // finding (Broad access) for this file, never a crash that loses the whole run.
             facts.Classification = FileClass.Error;
             facts.Error = e.GetType().Name + ": " + e.Message;
             facts.Methods.Clear();

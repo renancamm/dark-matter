@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Control: a transpiler applied with Harmony.Patch(original, transpiler: ...) to a game method found
 // by a constant name. The original is placed in the game's code, as for the attribute form
-// (TranspilerOperand). Expected: Full access, deep game access ("Rewrites the game's code ..."), that
+// (TranspilerOperand). Expected: Broad access, deep game access ("Rewrites the game's code ..."), that
 // reason only, "Changes how the game works" (G5a: transpiler placement by target route).
 using System.Collections.Generic;
 using HarmonyLib;

@@ -71,7 +71,7 @@ internal static class Program {
           darkmatter-pipeline extract DOWNLOADS EXTRACTED --manifest FILE [options]
               Extract each DOWNLOADS/<mod>/ into EXTRACTED/<mod>/ and write the manifest for
               `darkmatter analyze --manifest`. Unsafe entries are skipped, and an archive that
-              cannot be extracted completely is listed as unextracted (Full access). Entries
+              cannot be extracted completely is listed as unextracted (Broad access). Entries
               named .git, .gitmodules, .gitattributes, .hg, .svn, .bzr, .jj, .vscode, .idea,
               .cursor, .cursorrules, .claude, CLAUDE.md, CLAUDE.local.md, AGENTS.md,
               AGENTS.override.md, .gemini, GEMINI.md or .mcp.json (any case) are written as
@@ -81,7 +81,7 @@ internal static class Program {
               --max-files N        extracted file count limit per mod (default 100000)
 
           darkmatter-pipeline compare-results BEFORE.json [AFTER.json]
-              Tier, label and Full-access reason counts (by group) of a `darkmatter analyze
+              Tier, label and Broad-access reason counts (by group) of a `darkmatter analyze
               --json` file, or of two, and the mods whose tier or reason groups changed.
 
           darkmatter-pipeline rank-unclassified FACTS.json [--manifest FILE] [--top N] [--by member|type|namespace]

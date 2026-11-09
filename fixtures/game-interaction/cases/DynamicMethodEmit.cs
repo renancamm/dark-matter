@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The real API next to the transpiler control: a method built with DynamicMethod and ILGenerator.
-// Expected: Full access, "Builds code at run time".
+// Expected: Broad access, "Builds code at run time".
 using System;
 using System.Reflection.Emit;
 

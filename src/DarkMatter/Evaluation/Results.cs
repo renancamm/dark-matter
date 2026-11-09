@@ -13,7 +13,7 @@ internal sealed record ModFile(string Path, AssemblyFacts? Facts);
 internal sealed record ModInput(string Name, IReadOnlyList<ModFile> Files, IReadOnlyList<string> Unextracted, IReadOnlyList<string> Scripts);
 
 /// <summary>
-/// A label or a Full-access reason: its stable id (a label id, or the capability, finding or
+/// A label or a Broad-access reason: its stable id (a label id, or the capability, finding or
 /// combination id of a reason), its text for the user, and every piece of evidence behind it,
 /// distinct and in ordinal order, so two results can be compared line by line.
 /// </summary>
@@ -28,19 +28,19 @@ internal sealed record Finding(string Id, string Text, IReadOnlyList<string> Evi
 /// <summary>A code file as analyzed: its SHA-256 is what a loader checks before loading it.</summary>
 internal sealed record FileResult(string Path, string? Sha256, string? Name, FileClass? Classification);
 
-/// <summary>The Full-access reasons of one policy group ("system-access"), with its name and summary for the user.</summary>
+/// <summary>The Broad-access reasons of one policy group ("system-access"), with its name and summary for the user.</summary>
 internal sealed record GroupResult(string Group, string Name, string Summary, IReadOnlyList<Finding> Reasons);
 
 /// <summary>
-/// A mod's tier and why. <see cref="FullAccess"/> holds every group with a reason, in policy
-/// order; the mod is Full access when it is not empty.
+/// A mod's tier and why. <see cref="BroadAccess"/> holds every group with a reason, in policy
+/// order; the mod is Broad access when it is not empty.
 /// </summary>
 internal sealed record ModResult(
     Tier Tier,
     string TierName,
     string TierSummary,
     IReadOnlyList<Finding> Labels,
-    IReadOnlyList<GroupResult> FullAccess,
+    IReadOnlyList<GroupResult> BroadAccess,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Trusted,
     IReadOnlyList<FileResult> Files);

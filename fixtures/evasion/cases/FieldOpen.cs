@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe case: a public, writable MethodInfo field that only this assembly assigns from a constant
-// lookup, invoked through the field. Another assembly can assign it. Expected: Full access.
+// lookup, invoked through the field. Another assembly can assign it. Expected: Broad access.
 using System.Reflection;
 
 public class FieldOpenCase {

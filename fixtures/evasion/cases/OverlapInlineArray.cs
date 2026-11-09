@@ -3,7 +3,7 @@
 // string at offset 16, where the array's third element lies. The runtime accepts the layout (only
 // references overlap) and an object stored as element 2 is then read as a string: a type confusion
 // with no API call. Laid out from its one field, the array would seem to end at 8.
-// Expected: Full access, raw memory only.
+// Expected: Broad access, raw memory only.
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 

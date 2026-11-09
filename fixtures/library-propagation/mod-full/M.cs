@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Calls a library member whose override starts a program: the mod is Full access through the
+// Calls a library member whose override starts a program: the mod is Broad access through the
 // library's profile.
 namespace PropagationModFull {
     public class Mod {

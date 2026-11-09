@@ -4,10 +4,10 @@
 // this version and the SHA-256 of this file.
 //
 // The analyzer validates this file on load: every capability a rule or the analyzer can
-// produce must appear in exactly one of "fullAccess" (in one of its groups), "labels",
+// produce must appear in exactly one of "broadAccess" (in one of its groups), "labels",
 // "fileAccess.kinds" or "informational".
 {
-  "version": "35",
+  "version": "36",
   // v3: hardening phase 1 (late binding, Marshal, more deserializers, archive/XML/FileSystemInfo
   //     file labels, certificate store, services/WMI, temp folder counts as outside).
   // v4: hardening phase 2 (classification inversion): a framework member no rule matches is
@@ -335,14 +335,18 @@
   //     object stored into it, only its declared type (a store through a ref local could replace it). Results
   //     can only move from "Uses reflection the check cannot trace" to bounded reflection or to traced members,
   //     gain labels and reasons (D9) or move to untraced (D10).
+  // v36: the top tier "Full access" is renamed "Broad access", with no change to what puts a mod in it or to
+  //     its summary. The tier id "full-access" becomes "broad-access", the policy sections "fullAccess" and
+  //     "fullAccessCombinations" become "broadAccess" and "broadAccessCombinations", and results carry
+  //     "broadAccess" for their reason groups. The pipeline reads results from before v36 as the new names.
 
-  // Tiers, lowest first. A mod is in the highest tier that applies: Full access when any reason in
-  // "fullAccess" or "fullAccessCombinations" applies, else Limited access when it ships code, else
+  // Tiers, lowest first. A mod is in the highest tier that applies: Broad access when any reason in
+  // "broadAccess" or "broadAccessCombinations" applies, else Limited access when it ships code, else
   // No code. The name and summary are shown to the user.
   "tiers": {
     "no-code": { "name": "No code", "summary": "Only adds content. It can't run programs." },
     "limited-access": { "name": "Limited access", "summary": "It can only do what's listed." },
-    "full-access": { "name": "Full access", "summary": "It can do anything a program on your computer can." }
+    "broad-access": { "name": "Broad access", "summary": "It can do anything a program on your computer can." }
   },
 
   // Capability rules. Each pattern is matched against a referenced member, written
@@ -555,7 +559,7 @@
     "crypto": ["System.Security.Cryptography."],
     "compression": ["System.IO.Compression."],
     "threads": ["System.Threading.Thread::.ctor"],
-    // Reading the bytes of the assembly's own embedded resources (see fullAccessCombinations).
+    // Reading the bytes of the assembly's own embedded resources (see broadAccessCombinations).
     "resource-read": ["System.Reflection.Assembly::GetManifestResourceStream"],
     // Looking up and using types and members. Getting a type from a name, member access on a
     // resolved type, and whether what is invoked, created, read or written is traced to a name
@@ -589,12 +593,12 @@
     ]
   },
 
-  // Full access: any of these capabilities or findings, in three groups. A mod is Full access
+  // Broad access: any of these capabilities or findings, in three groups. A mod is Broad access
   // when any reason in any group applies; the groups say why, for the player. Every group is
   // listed whatever the others hold. The name and summary of a group and the text of each reason
   // are shown to the user. A reason states what the check saw in the mod's files, never what the
   // mod intends.
-  "fullAccess": {
+  "broadAccess": {
     // Blind spots bounded to the game's or the mod's own code and memory, of the kind ordinary
     // modding has (policy 9: "unverified"). Nothing seen reaches outside the game, but the check
     // cannot rule it out, and the labels are what it saw, not a complete list. Not a safety claim:
@@ -674,8 +678,8 @@
     }
   },
 
-  // Full access when a mod has every listed capability together (label or informational
-  // capabilities: a Full-access one decides the tier alone), with the "fullAccess" group it is
+  // Broad access when a mod has every listed capability together (label or informational
+  // capabilities: a Broad-access one decides the tier alone), with the "broadAccess" group it is
   // reported in. The
   // KSA mod loader loads any DLL in a mod's folder that something references, and reads
   // mod.toml, *.deps.json and the game's mod manifest from the mod and game folders. A
@@ -684,10 +688,10 @@
   // so the pair counts, not proof that downloaded bytes reach the write. A write outside the
   // game counts too: its path was not traced to the game's folders, which does not show it
   // avoids them (a path built at run time, or a Documents path whose folder names are obfuscated).
-  // An embedded binary the check recognizes is Full access on its own; one it cannot recognize
+  // An embedded binary the check recognizes is Broad access on its own; one it cannot recognize
   // (compressed with deflate or brotli, or encrypted) must be read from the resource and written
-  // out, so reading its own resources and writing such files is Full access too.
-  "fullAccessCombinations": [
+  // out, so reading its own resources and writing such files is Broad access too.
+  "broadAccessCombinations": [
     { "id": "network-code-write", "group": "system-access", "text": "Connects to the internet and changes files where the game loads code from", "caps": ["network", "file-write-code"] },
     { "id": "network-other-write", "group": "system-access", "text": "Connects to the internet and changes files the check cannot place outside the game's code folders", "caps": ["network", "file-write-outside"] },
     { "id": "resource-code-write", "group": "not-fully-checked", "text": "Writes out its own embedded data where the game loads code from", "caps": ["resource-read", "file-write-code"] },
@@ -718,7 +722,7 @@
   // safe namespace and vice versa.
   //
   // A framework member (an assembly of the .NET shared framework) that no rule here or in
-  // "capabilities" matches is "unclassified-reference": Full access (not fully checked). So a prefix belongs here
+  // "capabilities" matches is "unclassified-reference": Broad access (not fully checked). So a prefix belongs here
   // only when everything under it is capability-free: no files, network, processes, registry,
   // native code, raw memory, environment, code loading or reflection. Pointer types in a
   // member's signature are checked separately and stay raw memory. Members of other assemblies
@@ -932,7 +936,7 @@
     "inside": ["own", "game", "saves"],
     // Inside origins the loader reads code or mod settings from: the mod's own folder, the game's
     // Content/<id>/ and Documents mods/<id>/ folders, mod.toml, *.deps.json and the game's mod
-    // manifest. Writes there are "file-write-code" (labelled; see fullAccessCombinations). The
+    // manifest. Writes there are "file-write-code" (labelled; see broadAccessCombinations). The
     // game's own writes there, seen through the game-API map, are not labelled.
     "code": ["own", "game"],
     // Member -> origin of the path it returns. "special-folder" is Documents for the folder
@@ -969,13 +973,13 @@
   },
 
   // Exemptions (in "game" and "libraries" below). A game or trusted-library member passes every
-  // capability it reaches to the mods that call it, Full-access ones included (libraries also
+  // capability it reaches to the mods that call it, Broad-access ones included (libraries also
   // pass findings such as untraced reflection). An exemption stops the listed capabilities at
   // the matching members while the game or library profile is built: they are dropped where
   // they are found in such a member and do not flow from it to its callers or to a mod. Use it
-  // for a Full-access capability that is the member's intended job and is accounted for another
+  // for a Broad-access capability that is the member's intended job and is accounted for another
   // way, or for a capability the check over-approximates there (a label capability only then).
-  // "as" passes a label capability (or a Full-access capability that the mod's call narrows) instead.
+  // "as" passes a label capability (or a Broad-access capability that the mod's call narrows) instead.
   // "atCall": the exempted capabilities are accounted for at the mod's direct call (its arguments
   // are traced there), so the member taken as a delegate or method handle, or reached by
   // reflection or a patch, is "unresolved-reflection" at the mod. "member" uses the capability pattern syntax without

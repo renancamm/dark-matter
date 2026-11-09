@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A transpiler that hands an instruction an operand through a delegate to CodeMatcher's setter,
 // where the check's operand test at the call does not run. The operand is a method the check
-// cannot trace. Expected: Full access, "Uses reflection the check cannot trace" (G1a review A3).
+// cannot trace. Expected: Broad access, "Uses reflection the check cannot trace" (G1a review A3).
 using System;
 using System.Collections.Generic;
 using HarmonyLib;

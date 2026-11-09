@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Probe case: the Type comes from enumeration, not from a name. Expected: Full access.
+// Probe case: the Type comes from enumeration, not from a name. Expected: Broad access.
 using System.Reflection;
 
 public class EnumerateAndInvokeCase {

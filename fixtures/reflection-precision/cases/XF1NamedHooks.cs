@@ -2,7 +2,7 @@
 // Benign control for H7's member-scoped reach (F1), in the shape of a real mod's hook installer: a patch
 // helper looks its own prefix up by a name every caller passes as a constant, and is given the game
 // member to hook as a traced MethodInfo. The helper itself is never named by a lookup, so its parameters
-// are what its callers pass. Expected: Limited access, no labels (before H7: Full access, "Uses
+// are what its callers pass. Expected: Limited access, no labels (before H7: Broad access, "Uses
 // reflection the check cannot trace": the lookup on Hooks made every method of it reachable).
 using System.Reflection;
 

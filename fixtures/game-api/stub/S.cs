@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Stand-in for a game assembly: a public API method that writes to the save folder, a wrapper
-// that starts whatever its caller names (Full access for the mod that calls it), a math type
+// that starts whatever its caller names (Broad access for the mod that calls it), a math type
 // that reads its own memory (exempt by the policy's "KSA." entry), a browser opener (exempt
 // as "opens websites" by the policy), types mods use through reflection (one member of UiText
 // uses the clipboard; a nested type of Tools starts programs), and an XML helper.

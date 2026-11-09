@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The same cached filter given to Where, then First(): a filtering Where is not a name filter even
 // with a delegate made where it is used, so the lookup reaches every member of the type, the clipboard
-// one included. Expected: as CachedNameFilter, Limited access and "Uses your clipboard" (Full access,
+// one included. Expected: as CachedNameFilter, Limited access and "Uses your clipboard" (Broad access,
 // deep game access, before policy 23).
 using System.Linq;
 using System.Reflection;

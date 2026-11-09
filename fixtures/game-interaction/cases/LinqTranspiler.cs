@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A Harmony transpiler that only drops instructions of the game method with LINQ: it uses no
 // CodeInstruction member, so before policy 15 nothing counted it as a rewrite. The patched game
-// method is the browser opener whose exemption assumes the game's own check runs. Expected: Full
+// method is the browser opener whose exemption assumes the game's own check runs. Expected: Broad
 // access, deep game access ("Rewrites the game's code ..."), and "Starts other programs" given back
 // on the opener (G1a review A1).
 using System.Collections.Generic;

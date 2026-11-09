@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe case: FirstOrDefault with a default value on an empty array returns the default, a method
-// the check cannot trace, which is then invoked. Expected: Full access, "Uses reflection the check
+// the check cannot trace, which is then invoked. Expected: Broad access, "Uses reflection the check
 // cannot trace" (G1a review A7).
 using System;
 using System.Linq;

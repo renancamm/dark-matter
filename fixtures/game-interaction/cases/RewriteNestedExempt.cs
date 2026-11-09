@@ -2,7 +2,7 @@
 // A mod with a Harmony transpiler (it can change the game's code) that reaches, by GetMember, a nested
 // type of the game's RequiresRestartPopup, which the policy exempts from process-start as a whole
 // ("KSA.RequiresRestartPopup/": the game restarting its own executable). Once game code can be rewritten
-// that exemption is given back. Expected: Full access, deep game access ("Rewrites ...") and "Starts
+// that exemption is given back. Expected: Broad access, deep game access ("Rewrites ...") and "Starts
 // other programs" (H3 review: policy 19 compared the exemption's nested-type name, empty for a pattern
 // that ends at the '/', with the name looked up, and gave nothing back).
 using System.Collections.Generic;

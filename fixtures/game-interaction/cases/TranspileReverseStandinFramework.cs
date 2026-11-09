@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The same route as TranspileReverseStandin, a reverse patch by attribute whose stand-in carries its own
-// transpiler, on a .NET method (string.Concat). Expected: Full access, system access, "Rewrites code
+// transpiler, on a .NET method (string.Concat). Expected: Broad access, system access, "Rewrites code
 // other than the game's with a Harmony transpiler" (G5a).
 using System.Collections.Generic;
 using System.Linq;

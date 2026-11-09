@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Probe case: a Harmony Traverse on a type named at run time. Expected: Full access.
+// Probe case: a Harmony Traverse on a type named at run time. Expected: Broad access.
 using HarmonyLib;
 
 public class TraverseByRuntimeNameCase {

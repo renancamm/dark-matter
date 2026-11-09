@@ -103,7 +103,7 @@ internal static class AnalyzeCommand {
             reflectionFieldWrites = f.Methods.SelectMany(m => m.ReflectionFieldWrites.Select(w => $"{w}  <-  {m.Name}")).Distinct().ToList(),
             // Types reached by reflection, resolved per mod by where they live.
             reflectedTypes = f.Methods.SelectMany(m => m.ReflectedTypes).Select(r => r.Assembly == null ? r.Detail : $"{r.Detail}  (in {(r.Assembly.Length > 0 ? r.Assembly : "?")})").Distinct().ToList(),
-            // Members Harmony transpilers rewrite, placed per mod (Full access unless the game's code).
+            // Members Harmony transpilers rewrite, placed per mod (Broad access unless the game's code).
             rewriteTargets = f.Methods.SelectMany(m => m.RewriteTargets).Select(r => $"{r.Detail}  [{(r.Node ?? (r.Type != null ? r.Type + (r.Derived ? "+" : "") + " in " + (r.Assembly ?? "?") : "untraced"))}{(r.IfRewrites ? ", if the mod rewrites code" : "")}]").Distinct().ToList(),
             // File operations and where their paths come from (path atoms, resolved per mod).
             fileOperations = f.Methods.SelectMany(m => m.FileOps.Select(o => $"{o.Member}  <-  {m.Name}  [{Atoms(o.Path)}]")).Distinct().ToList(),

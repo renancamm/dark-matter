@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Near miss (D7): the patch method is also handed to Harmony by name (new HarmonyMethod(type, name)), to patch
-// whatever member the mod chooses. Expected: Full access, "Uses reflection the check cannot trace".
+// whatever member the mod chooses. Expected: Broad access, "Uses reflection the check cannot trace".
 using HarmonyLib;
 
 [HarmonyPatch(typeof(KSA.Craft), nameof(KSA.Craft.Update))]

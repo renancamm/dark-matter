@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Near miss (D5): the cached FieldInfo can also hold a field declared as object, so what is read through it is not
-// typed. Expected: Full access, "Uses reflection the check cannot trace".
+// typed. Expected: Broad access, "Uses reflection the check cannot trace".
 using System.Reflection;
 
 public static class ValueFieldReassigned {

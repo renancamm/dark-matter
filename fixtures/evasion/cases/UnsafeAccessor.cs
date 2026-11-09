@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe case: an UnsafeAccessor reaches a private member by name with no reference to it.
-// Expected: Full access.
+// Expected: Broad access.
 using System.Runtime.CompilerServices;
 
 public class UnsafeAccessorCase {

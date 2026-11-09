@@ -302,7 +302,7 @@ internal static partial class ScanCommand {
         }
 
         var pipeline = PipelineVersion;
-        // The extraction limits decide whether a large archive counts as extracted (Full access if not).
+        // The extraction limits decide whether a large archive counts as extracted (Broad access if not).
         var limits = s.Limits;
         var key = Sha($"{pipeline}|{pipelineSha}|{toolKey}|{gameKey}|{allowKey}|{limits.MaxDepth}|{limits.MaxBytes}|{limits.MaxFiles}");
         var stamp = new JsonObject {
@@ -619,7 +619,7 @@ internal static partial class ScanCommand {
     /// <summary>
     /// Why a result may come from a passing problem of this computer rather than from the release:
     /// a file-system error while extracting, a file the analyzer could not read, or a file that
-    /// changed between extraction and analysis. Such a result is reported (it fails closed, as Full
+    /// changed between extraction and analysis. Such a result is reported (it fails closed, as Broad
     /// access) but the next run scans the release again instead of reusing it. Null when none.
     /// </summary>
     static string? RetryReason(Entry e, JsonObject result) {

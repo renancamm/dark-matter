@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control for NestedReach: the same private method reached through typeof of the nested type.
-// Expected: Full access, "Uses reflection the check cannot trace".
+// Expected: Broad access, "Uses reflection the check cannot trace".
 using System;
 using System.Reflection;
 

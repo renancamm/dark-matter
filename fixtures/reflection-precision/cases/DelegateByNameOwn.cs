@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A private method of the mod reached by Delegate.CreateDelegate(Type, Type, string), called with a
 // Type argument no direct caller passes: its own reflection on that parameter cannot be traced.
-// Expected: Full access, "Uses reflection the check cannot trace" (H1a-review XF1Delegate; before
+// Expected: Broad access, "Uses reflection the check cannot trace" (H1a-review XF1Delegate; before
 // policy 19, Limited access, no labels).
 using System;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Negative (D10): the typed value is cast to object and back through a generic helper (unbox.any of a type
-// parameter), which the check does not type. Expected: Full access, "Uses reflection the check cannot trace".
+// parameter), which the check does not type. Expected: Broad access, "Uses reflection the check cannot trace".
 public static class ValueCastGeneric {
     static T As<T>(object value) => (T)value;
 

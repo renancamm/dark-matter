@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The same route as TranspilePatchCall, Harmony.Patch(original, transpiler: ...), on a .NET method
 // (string.Concat): the original is placed outside the game. Without it the game-target case would
-// pass even if this route placed nothing. Expected: Full access, system access, "Rewrites code other
+// pass even if this route placed nothing. Expected: Broad access, system access, "Rewrites code other
 // than the game's with a Harmony transpiler" (G5a).
 using System.Collections.Generic;
 using HarmonyLib;

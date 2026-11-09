@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // C3 near-miss: an explicit-layout union over a generic framework struct (KeyValuePair<int, int>). A generic
-// instantiation is not laid out, plain or not, so the overlap stays "Reads or writes memory directly" (Full
+// instantiation is not laid out, plain or not, so the overlap stays "Reads or writes memory directly" (Broad
 // access), fail closed.
 using System.Collections.Generic;
 using System.Runtime.InteropServices;

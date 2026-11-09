@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe case: the MethodInfo field is assigned from a constant lookup, but overwritten through
-// FieldInfo.SetValue with an enumerated member before it is invoked. Expected: Full access.
+// FieldInfo.SetValue with an enumerated member before it is invoked. Expected: Broad access.
 using System.Linq;
 using System.Reflection;
 

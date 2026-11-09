@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The same route as TranspileReversePatch, Harmony.ReversePatch(original, standin, transpiler), with a
-// .NET method (string.Concat) as the original. Expected: Full access, system access, "Rewrites code
+// .NET method (string.Concat) as the original. Expected: Broad access, system access, "Rewrites code
 // other than the game's with a Harmony transpiler" (G5a).
 using System.Collections.Generic;
 using HarmonyLib;

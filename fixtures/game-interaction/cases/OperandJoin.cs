@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // An instruction operand that is a string on one path and a method the check cannot trace on the
-// other: the join is not an inert string. Expected: Full access, "Uses reflection the check cannot
+// other: the join is not an inert string. Expected: Broad access, "Uses reflection the check cannot
 // trace" (G1a review A4).
 using System;
 using System.Collections.Generic;

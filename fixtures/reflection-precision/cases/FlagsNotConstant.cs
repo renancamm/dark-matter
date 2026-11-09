@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Binding flags that are not a constant at the lookup (kept in a field, so they can include
-// IgnoreCase): the name matches any casing. Expected: Full access, "Starts other programs" (H1;
+// IgnoreCase): the name matches any casing. Expected: Broad access, "Starts other programs" (H1;
 // before policy 19, Limited access, no labels).
 using System.Reflection;
 

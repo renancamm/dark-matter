@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Reflection targets: a constant type name resolves to its capabilities (Limited access);
-// a type name built at run time cannot be resolved (Full access).
+// a type name built at run time cannot be resolved (Broad access).
 using System;
 
 public class ReflectionCases {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // A private method of a nested type, found through GetNestedType on its outer type, invoked by
-// reflection with a Type argument no direct caller passes. Expected: Full access, "Uses reflection
+// reflection with a Type argument no direct caller passes. Expected: Broad access, "Uses reflection
 // the check cannot trace" (H1a-review H5; before policy 19 reflection on the outer type did not
 // count for its nested types: Limited access, no labels). Control: NestedDirect.
 using System;

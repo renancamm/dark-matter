@@ -3,7 +3,7 @@
 // reachable by reflection only through a Type field (a traced node). Q.P looks a member of R up by its
 // name parameter; its only direct call names "Hello", but P is also invoked by reflection through the
 // field `self`, with "Run", so R.Run's Type parameter is whatever that call passes. The reach through
-// the field must be inside the name fixpoint. Expected: Full access, "Uses reflection the check cannot
+// the field must be inside the name fixpoint. Expected: Broad access, "Uses reflection the check cannot
 // trace" (a prototype without the guard gave Limited access; H1a-review probe XF1Order).
 using System;
 using System.Reflection;

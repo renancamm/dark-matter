@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A game type's nested type found with GetMember(name), then a method of it invoked. GetMember
 // finds nested types as well as members, so the name reaches the nested type's members. Expected:
-// Full access, "Starts other programs" (the nested type's method starts what it is given; G1a
+// Broad access, "Starts other programs" (the nested type's method starts what it is given; G1a
 // review A8).
 using System;
 

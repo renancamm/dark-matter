@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // A game type's method array given a method the check cannot trace through Array.SetValue (a
-// framework member that writes into it), then an element invoked. Expected: Full access, "Uses
+// framework member that writes into it), then an element invoked. Expected: Broad access, "Uses
 // reflection the check cannot trace", not only the bounded reason (G1a review A9).
 using System;
 

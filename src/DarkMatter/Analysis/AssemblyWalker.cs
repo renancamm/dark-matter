@@ -93,7 +93,7 @@ internal sealed partial class AssemblyWalker {
     /// in an assembly of the .NET shared framework or of the game (in 0Harmony for Harmony's names). A
     /// type of the same name defined here, in another of the mod's assemblies or in code that was not
     /// analyzed is ordinary code, with none of the modelled semantics (which narrow what a call counts
-    /// as). A shipped file named like any of them is a name collision (Full access), so a reference to
+    /// as). A shipped file named like any of them is a name collision (Broad access), so a reference to
     /// those names is the real one.
     /// </summary>
     public bool Models(EntityHandle h, string name) {
@@ -2135,7 +2135,7 @@ internal sealed partial class AssemblyWalker {
                 mf.UnresolvedReflection.Add($"{name} has no body (UnsafeAccessor or internal call): reaches members the check cannot see");
         } catch (Exception) {
             // Deliberately broad: a method whose signature or body cannot be decoded is
-            // unanalyzable, which is a finding (Full access), not a crash.
+            // unanalyzable, which is a finding (Broad access), not a crash.
             mf.DecodeFailed = true;
         }
     }

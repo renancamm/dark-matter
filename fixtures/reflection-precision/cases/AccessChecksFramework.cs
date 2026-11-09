@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // [assembly: IgnoresAccessChecksTo("System.Private.CoreLib")]: the runtime then lets this assembly
 // call non-public framework members directly, which the policy (it classifies framework members by
-// name, not by visibility) does not account for. Expected: Full access, "Uses a part of .NET the
+// name, not by visibility) does not account for. Expected: Broad access, "Uses a part of .NET the
 // check does not classify" (before policy 19 the attribute was not read: Limited access).
 // Control: AccessChecksGame.
 [assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("System.Private.CoreLib")]

@@ -17,7 +17,7 @@ internal static class Evaluator {
         if (mod.Files.Count == 0 && mod.Unextracted.Count == 0 && mod.Scripts.Count == 0)
             return Result(policy, Tier.NoCode, [], [], [], [], files);
 
-        var findings = new Dictionary<string, List<string>>();  // fullAccess key -> evidence
+        var findings = new Dictionary<string, List<string>>();  // broadAccess key -> evidence
         var caps = new Dictionary<string, List<string>>();      // capability -> evidence
         var warnings = new List<string>();
         var trusted = new SortedSet<string>(StringComparer.Ordinal);
@@ -120,7 +120,7 @@ internal static class Evaluator {
         foreach (var (cap, ev) in caps)
             if (policy.RaisesTier(cap)) foreach (var e in ev) Add(findings, cap, e);
 
-        // Labels are reported in every tier: in Limited access they are the complete list, in Full
+        // Labels are reported in every tier: in Limited access they are the complete list, in Broad
         // access what the check saw.
         var labels = policy.Labels
             .Select(l => Finding.Of(l.Id, l.Text, l.Caps.Where(caps.ContainsKey).SelectMany(c => caps[c])))
@@ -132,13 +132,13 @@ internal static class Evaluator {
             List<Finding> reasons = [.. g.Reasons
                 .Where(kv => findings.ContainsKey(kv.Key))
                 .Select(kv => Finding.Of(kv.Key, kv.Value, findings[kv.Key]))];
-            // Capabilities that are Limited access one by one, but together let a mod do what Full
+            // Capabilities that are Limited access one by one, but together let a mod do what Broad
             // access covers (download code and put it where the loader picks it up).
             foreach (var c in policy.Combinations.Where(c => c.Group == g.Id && c.Caps.All(caps.ContainsKey)))
                 reasons.Add(Finding.Of(c.Id, c.Text, c.Caps.Select(cap => $"{cap}: {caps[cap].Min(StringComparer.Ordinal)}")));
             if (reasons.Count > 0) groups.Add(new(g.Id, g.Name, g.Summary, reasons));
         }
-        return Result(policy, groups.Count > 0 ? Tier.FullAccess : Tier.LimitedAccess, labels, groups, warnings, [.. trusted], files);
+        return Result(policy, groups.Count > 0 ? Tier.BroadAccess : Tier.LimitedAccess, labels, groups, warnings, [.. trusted], files);
     }
 
     static ModResult Result(Policy policy, Tier tier, IReadOnlyList<Finding> labels, IReadOnlyList<GroupResult> groups,
@@ -282,7 +282,7 @@ internal static class Evaluator {
     }
 
     // A transpiler is deep game access ("code-rewrite") only because what it can change is bounded to the
-    // game method it rewrites. Rewriting anything else is Full access ("rewrite-outside-game"): framework
+    // game method it rewrites. Rewriting anything else is Broad access ("rewrite-outside-game"): framework
     // code (whose members the policy classifies by what they do as published), a trusted library (whose
     // profile, and the exemptions applied to it, assume its published code runs), the mod's own code
     // (whose analysis holds only as written), code that was not analyzed, or a target the check cannot

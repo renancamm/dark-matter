@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Near miss (D7): the mod's own code also calls the patch method, with any object. Expected: Full access, "Uses
+// Near miss (D7): the mod's own code also calls the patch method, with any object. Expected: Broad access, "Uses
 // reflection the check cannot trace".
 using HarmonyLib;
 

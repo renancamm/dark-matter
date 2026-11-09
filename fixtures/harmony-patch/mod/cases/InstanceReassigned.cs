@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Near miss (D7): the patch method stores another value into __instance before using it. Expected: Full access,
+// Near miss (D7): the patch method stores another value into __instance before using it. Expected: Broad access,
 // "Uses reflection the check cannot trace".
 using HarmonyLib;
 

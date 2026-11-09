@@ -2,7 +2,7 @@
 // Probe (H7 review): an expression tree's lambda that calls a private method of the mod's own, compiled and
 // called. The compiler names the method by a method handle (ldtoken), which no lookup by name records, and the
 // compiled delegate passes the method whatever it is called with. Q.Run's one direct call passes KSA.UiText
-// (no Open); the expression passes KSA.Links, whose Open starts what it is given. Expected: Full access,
+// (no Open); the expression passes KSA.Links, whose Open starts what it is given. Expected: Broad access,
 // "Uses reflection the check cannot trace" (before: Limited access, nothing labelled).
 using System;
 using System.Linq.Expressions;

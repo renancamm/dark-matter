@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7 review, H7b): as InheritedGame, with an unnamed lookup (GetMethods), which returns the inherited
-// members too. Expected: Full access, "Starts other programs" (before: Limited access, nothing).
+// members too. Expected: Broad access, "Starts other programs" (before: Limited access, nothing).
 using System.Reflection;
 
 internal class InheritedGameAnyType : KSA.StartsBase { }

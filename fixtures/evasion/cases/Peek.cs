@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Probe case: a Marshal member that reads memory. Expected: Full access.
+// Probe case: a Marshal member that reads memory. Expected: Broad access.
 using System;
 using System.Runtime.InteropServices;
 

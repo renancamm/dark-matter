@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Control: a Harmony transpiler that points the game method's calls at the mod's own method, found
 // by a constant name. The game method Harmony compiles is not one the check has read, so this is
-// deep game access ("Rewrites the game's code ..."), not "Builds code at run time". Expected: Full
+// deep game access ("Rewrites the game's code ..."), not "Builds code at run time". Expected: Broad
 // access, deep game access, that reason only, "Changes how the game works".
 using System.Collections.Generic;
 using System.Reflection.Emit;

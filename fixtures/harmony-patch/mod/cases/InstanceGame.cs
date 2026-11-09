@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (D7, policy 35): a postfix's __instance declared as object is the instance of the game method it patches,
-// named by typeof in the attribute and declared by that type alone: that type or a derived one. Expected: Full
+// named by typeof in the attribute and declared by that type alone: that type or a derived one. Expected: Broad
 // access, deep game access only, "Uses your clipboard" (before: "Uses reflection the check cannot trace").
 using HarmonyLib;
 

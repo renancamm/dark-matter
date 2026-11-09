@@ -14,7 +14,8 @@ internal static class ScanText {
     /// <summary>Evidence lines shown per label or reason with -v; the JSON has them all.</summary>
     const int Shown = 20;
 
-    static readonly string[] TierOrder = ["no-code", "limited-access", "full-access"];
+    // "full-access": the top tier of a run from before policy 36.
+    static readonly string[] TierOrder = ["no-code", "limited-access", "broad-access", "full-access"];
 
     public static string Render(JsonObject run, bool all, bool verbose) {
         var w = new StringBuilder();

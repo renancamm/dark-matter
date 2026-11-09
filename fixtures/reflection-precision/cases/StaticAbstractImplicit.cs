@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7b): as StaticAbstractExplicit, implemented implicitly by a public static method of an internal type,
-// and by one a type inherits from its base class (the compiler adds a forwarding method). Expected: Full
+// and by one a type inherits from its base class (the compiler adds a forwarding method). Expected: Broad
 // access, "Uses reflection the check cannot trace" (before: Limited access, nothing).
 using System;
 

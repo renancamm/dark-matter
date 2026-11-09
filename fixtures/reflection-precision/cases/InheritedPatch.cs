@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7b): a Harmony patch named through the mod's own type on a method only its game base type defines
 // (AccessTools.Method searches the base types), whose prefix changes the file the game method starts.
-// Expected: Full access, "Starts other programs" (before: Limited access, "Changes how the game works").
+// Expected: Broad access, "Starts other programs" (before: Limited access, "Changes how the game works").
 using HarmonyLib;
 
 internal class InheritedPatchType : KSA.StartsBase { }

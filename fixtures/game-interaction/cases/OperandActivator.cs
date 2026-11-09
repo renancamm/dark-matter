@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A transpiler that makes an instruction with Activator.CreateInstance instead of its constructor,
 // so the operand is not checked where the constructor is called. The operand is a method the check
-// cannot trace. Expected: Full access, "Uses reflection the check cannot trace" (G1a review A3).
+// cannot trace. Expected: Broad access, "Uses reflection the check cannot trace" (G1a review A3).
 using System;
 using System.Collections.Generic;
 using System.Linq;

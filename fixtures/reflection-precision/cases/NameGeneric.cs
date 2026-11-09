@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A member name given to a method of the mod's own generic type (a call through a member
 // reference on Helper<int>), which looks a game method up by that name and invokes it. The name
-// comes from the console. Expected: Full access, "Starts other programs" (any member of KSA.Links
+// comes from the console. Expected: Broad access, "Starts other programs" (any member of KSA.Links
 // can be reached; G1a review A10).
 using System;
 

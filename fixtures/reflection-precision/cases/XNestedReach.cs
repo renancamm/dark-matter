@@ -2,7 +2,7 @@
 // Negative for H7's member-scoped reach (F1, guards 2 and 4): a private method of a nested type, found
 // through GetNestedType on its outer type and by a name in another case (IgnoreCase), invoked by
 // reflection with a Type argument no direct caller passes. The walker counts the nested type as the
-// outer one, so the name looked up on Outer must reach Outer/Inner::Run, ignoring case. Expected: Full
+// outer one, so the name looked up on Outer must reach Outer/Inner::Run, ignoring case. Expected: Broad
 // access, "Uses reflection the check cannot trace". (NestedReach is the same with the exact name.)
 using System;
 using System.Reflection;

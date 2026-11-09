@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Negative for H7's member-scoped reach (F1, guard 2): GetMember with a prefix pattern ("Ru*") on the
-// mod's own type finds Run, whose Type parameter is then what the reflective call passes. Expected: Full
+// mod's own type finds Run, whose Type parameter is then what the reflective call passes. Expected: Broad
 // access, "Uses reflection the check cannot trace" (a prototype that compared "Ru*" literally gave
 // Limited access; H1a-review probe XF1GetMemberStar).
 using System;

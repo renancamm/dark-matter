@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The same route as TranspileTargetMethod, a TargetMethod() of a class with a transpiler, returning a
-// .NET method (string.Concat). Expected: Full access, system access, "Rewrites code other than the
+// .NET method (string.Concat). Expected: Broad access, system access, "Rewrites code other than the
 // game's with a Harmony transpiler" (G5a).
 using System.Collections.Generic;
 using System.Reflection;

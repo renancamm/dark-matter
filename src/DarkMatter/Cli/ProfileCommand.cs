@@ -38,7 +38,7 @@ internal static class ProfileCommand {
 
         var profile = GameApiProfile.Build(game, policy);
         JsonOutput.Write(output, new {
-            note = "Game-API capability map: the game's assembly, type and member names, and its methods with the label and Full-access capabilities they reach, with one example each. Names and capability tags only; contains no game code. Derived from the game's assemblies: never commit it.",
+            note = "Game-API capability map: the game's assembly, type and member names, and its methods with the label and Broad-access capabilities they reach, with one example each. Names and capability tags only; contains no game code. Derived from the game's assemblies: never commit it.",
             format = Inputs.ProfileFormat,
             stamp = JsonOutput.Stamp(policy),
             assemblies = game.Select(f => f.Name).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToList(),
@@ -68,11 +68,11 @@ internal static class ProfileCommand {
             methods = profile.ToDictionary(kv => kv.Key, kv => kv.Value.Keys.ToList()),
             evidence = profile,
         });
-        int full = profile.Count(kv => kv.Value.Keys.Any(policy.FullAccess.ContainsKey));
+        int broad = profile.Count(kv => kv.Value.Keys.Any(policy.BroadAccess.ContainsKey));
         var byGroup = string.Join(", ", policy.Groups.Select(g => $"{profile.Count(kv => kv.Value.Keys.Any(g.Reasons.ContainsKey))} {g.Name.ToLowerInvariant()}"));
         var unread = game.SelectMany(f => f.Methods.Where(m => m.DecodeFailed).Select(m => m.Name)).Distinct(StringComparer.Ordinal).ToList();
         Console.Error.WriteLine($"profile: {game.Count} game assemblies ({runtime.Count} runtime assemblies skipped), {profile.Count} methods "
-            + $"({full} reach a Full-access capability: {byGroup}) -> {output}");
+            + $"({broad} reach a Broad-access capability: {byGroup}) -> {output}");
         if (unread.Count > 0)
             Console.Error.WriteLine($"warning: {unread.Count} game method{(unread.Count == 1 ? "" : "s")} could not be read ({string.Join(", ", unread.Take(3))}{(unread.Count > 3 ? ", ..." : "")}); calls that reach them count as not analyzed");
         if (skipped.Count > 0) Console.Error.WriteLine($"warning: {skipped.Count} game file{(skipped.Count == 1 ? "" : "s")} could not be read; calls into {(skipped.Count == 1 ? "it" : "them")} count as not analyzed");
@@ -135,7 +135,7 @@ internal static class ProfileCommand {
             game?.Interfaces);
         var profiles = LibraryProfile.Build(files, policy, boundary, game?.Methods ?? new Dictionary<string, string[]>(), game?.Types);
         JsonOutput.Write(output, new {
-            note = "Trusted-library profiles, keyed by file SHA-256: every member of each file with the capabilities and findings it reaches (Full-access ones included), with one example each. Derived from the libraries' assemblies.",
+            note = "Trusted-library profiles, keyed by file SHA-256: every member of each file with the capabilities and findings it reaches (Broad-access ones included), with one example each. Derived from the libraries' assemblies.",
             format = Inputs.ProfileFormat,
             stamp = JsonOutput.Stamp(policy),
             libraries = profiles.OrderBy(p => p.Profile.Name, StringComparer.Ordinal).ThenBy(p => p.Sha256, StringComparer.Ordinal)

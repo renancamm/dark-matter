@@ -19,11 +19,11 @@ internal static class TextReport {
             w.WriteLine($"## {name}: {r.TierName}");
             w.WriteLine($"  {r.TierSummary}");
             if (r.Tier == Tier.NoCode) continue;
-            if (r.FullAccess.Count > 0) w.WriteLine($"  Why: {string.Join(" · ", r.FullAccess.Select(g => g.Name))}");
+            if (r.BroadAccess.Count > 0) w.WriteLine($"  Why: {string.Join(" · ", r.BroadAccess.Select(g => g.Name))}");
             w.WriteLine(r.Tier == Tier.LimitedAccess ? "  Can do:" : "  Can do (not a complete list):");
             if (r.Labels.Count == 0) w.WriteLine("    - nothing the check labels");
             foreach (var l in r.Labels) { w.WriteLine($"    - {l.Text}"); Evidence(l); }
-            foreach (var g in r.FullAccess) {
+            foreach (var g in r.BroadAccess) {
                 w.WriteLine($"  {g.Name}: {g.Summary}");
                 foreach (var f in g.Reasons) { w.WriteLine($"    - {f.Text}"); Evidence(f); }
             }

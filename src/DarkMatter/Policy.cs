@@ -8,17 +8,17 @@ using System.Text.RegularExpressions;
 namespace DarkMatter;
 
 /// <summary>Access tier of a mod, lowest first.</summary>
-internal enum Tier { NoCode, LimitedAccess, FullAccess }
+internal enum Tier { NoCode, LimitedAccess, BroadAccess }
 
 /// <summary>Whether a file operation reads or writes.</summary>
 internal enum FileOpKind { Read, Write }
 
 internal static class TierExtensions {
-    /// <summary>The tier's identifier in the policy and in JSON output ("full-access").</summary>
+    /// <summary>The tier's identifier in the policy and in JSON output ("broad-access").</summary>
     public static string Id(this Tier tier) => tier switch {
         Tier.NoCode => "no-code",
         Tier.LimitedAccess => "limited-access",
-        _ => "full-access",
+        _ => "broad-access",
     };
 }
 
@@ -37,7 +37,7 @@ internal sealed class Policy {
         "unsafe-code",
     ];
 
-    /// <summary>Findings that are not capabilities; each needs an entry in one "fullAccess" group.</summary>
+    /// <summary>Findings that are not capabilities; each needs an entry in one "broadAccess" group.</summary>
     public static readonly IReadOnlyList<string> Findings = [
         "unresolved-reflection", "bounded-reflection", "com-activation", "decode-failure", "unreadable-file",
         "native-binary", "unextracted-archive", "not-analyzed", "unclassified-reference", "unanalyzed-call",
@@ -54,10 +54,10 @@ internal sealed class Policy {
     public required string Sha256 { get; init; }
     public required IReadOnlyDictionary<string, TierText> Tiers { get; init; }
     public required IReadOnlyList<Rule> Rules { get; init; }
-    /// <summary>The Full-access reason groups, in display order.</summary>
+    /// <summary>The Broad-access reason groups, in display order.</summary>
     public required IReadOnlyList<Group> Groups { get; init; }
-    /// <summary>Every Full-access capability or finding, with its reason text (all groups).</summary>
-    public required IReadOnlyDictionary<string, string> FullAccess { get; init; }
+    /// <summary>Every Broad-access capability or finding, with its reason text (all groups).</summary>
+    public required IReadOnlyDictionary<string, string> BroadAccess { get; init; }
     public required IReadOnlyList<Combination> Combinations { get; init; }
     public required IReadOnlyList<Label> Labels { get; init; }
     public required IReadOnlySet<string> Informational { get; init; }
@@ -82,14 +82,14 @@ internal sealed class Policy {
     /// <summary>A tier's name and one-line summary, shown to the user.</summary>
     internal sealed record TierText(string Name, string Summary);
 
-    /// <summary>A group of Full-access reasons: why a mod is Full access, for the user.</summary>
+    /// <summary>A group of Broad-access reasons: why a mod is Broad access, for the user.</summary>
     /// <param name="Id">Identifier in the policy and in JSON output ("system-access").</param>
     /// <param name="Name">Shown to the user ("System access").</param>
     /// <param name="Summary">One line shown to the user.</param>
     /// <param name="Reasons">Capability or finding -> reason text.</param>
     internal sealed record Group(string Id, string Name, string Summary, IReadOnlyDictionary<string, string> Reasons);
 
-    /// <summary>A Full-access finding, in group <see cref="Group"/>, for a mod that has all of <see cref="Caps"/>.</summary>
+    /// <summary>A Broad-access finding, in group <see cref="Group"/>, for a mod that has all of <see cref="Caps"/>.</summary>
     internal sealed record Combination(string Id, string Group, string Text, IReadOnlyList<string> Caps);
 
     internal enum MatchKind { Prefix, Exact, Contains }
@@ -105,7 +105,7 @@ internal sealed class Policy {
     /// <param name="Library">Allowlist name of the library ("0Harmony"); null for the game.</param>
     /// <param name="Pattern">Member pattern, same syntax as a capability rule (no parameter list or arity).</param>
     /// <param name="Caps">Capabilities or findings that are not passed on.</param>
-    /// <param name="As">A label capability passed on instead (or a Full-access one the mod's call narrows), or null.</param>
+    /// <param name="As">A label capability passed on instead (or a Broad-access one the mod's call narrows), or null.</param>
     /// <param name="Reason">Why, for the reader of the policy.</param>
     /// <param name="AtCall">What is exempted is accounted for at the mod's direct call to the member (its
     /// arguments are traced there): reached any other way (a delegate, a method handle, reflection, a
@@ -196,11 +196,11 @@ internal sealed class Policy {
             foreach (var p in c.Value.EnumerateArray()) rules.Add(Rule.Parse(c.Name, Text(p)));
         foreach (var p in root.GetProperty("safe").EnumerateArray()) rules.Add(Rule.Parse(Safe, Text(p)));
 
-        var groups = root.GetProperty("fullAccess").EnumerateObject()
+        var groups = root.GetProperty("broadAccess").EnumerateObject()
             .Select(g => new Group(g.Name, Text(g.Value.GetProperty("name")), Text(g.Value.GetProperty("summary")), Strings(g.Value.GetProperty("reasons")))).ToList();
         // A key in two groups is reported by Validate.
-        var fullAccess = new Dictionary<string, string>();
-        foreach (var (key, text) in groups.SelectMany(g => g.Reasons)) fullAccess.TryAdd(key, text);
+        var broadAccess = new Dictionary<string, string>();
+        foreach (var (key, text) in groups.SelectMany(g => g.Reasons)) broadAccess.TryAdd(key, text);
         var policy = new Policy {
             Version = Text(root.GetProperty("version")),
             Sha256 = Convert.ToHexStringLower(SHA256.HashData(bytes)),
@@ -208,8 +208,8 @@ internal sealed class Policy {
                 .ToDictionary(t => t.Name, t => new TierText(Text(t.Value.GetProperty("name")), Text(t.Value.GetProperty("summary")))),
             Rules = rules,
             Groups = groups,
-            FullAccess = fullAccess,
-            Combinations = [.. root.GetProperty("fullAccessCombinations").EnumerateArray()
+            BroadAccess = broadAccess,
+            Combinations = [.. root.GetProperty("broadAccessCombinations").EnumerateArray()
                 .Select(c => new Combination(Text(c.GetProperty("id")), Text(c.GetProperty("group")), Text(c.GetProperty("text")), [.. c.GetProperty("caps").EnumerateArray().Select(Text)]))],
             Labels = [.. root.GetProperty("labels").EnumerateArray().Select(l => new Label(Text(l.GetProperty("id")), Text(l.GetProperty("text")), Set(l.GetProperty("caps"))))],
             Informational = Set(root.GetProperty("informational")),
@@ -250,12 +250,12 @@ internal sealed class Policy {
                 x.TryGetProperty("atCall", out var atCall) && atCall.GetBoolean())))];
 
     /// <summary>
-    /// Whether a capability or finding raises the tier on its own, to Full access (any group).
+    /// Whether a capability or finding raises the tier on its own, to Broad access (any group).
     /// What a game or library member passes on through overrides and patches is decided by this.
     /// </summary>
-    public bool RaisesTier(string cap) => FullAccess.ContainsKey(cap);
+    public bool RaisesTier(string cap) => BroadAccess.ContainsKey(cap);
 
-    /// <summary>The Full-access group of a capability or finding, or null for none.</summary>
+    /// <summary>The Broad-access group of a capability or finding, or null for none.</summary>
     public Group? GroupOf(string cap) => Groups.FirstOrDefault(g => g.Reasons.ContainsKey(cap));
 
     /// <summary>Every capability the analyzer can produce.</summary>
@@ -269,26 +269,26 @@ internal sealed class Policy {
         foreach (var cap in ProducibleCaps) {
             int homes = Groups(cap) + (labelled.Contains(cap) ? 1 : 0)
                 + (FileKinds.ContainsKey(cap) ? 1 : 0) + (Informational.Contains(cap) ? 1 : 0);
-            if (homes != 1) errors.Add($"capability '{cap}' must appear in exactly one of fullAccess (one group), labels, fileAccess.kinds, informational (found {homes})");
+            if (homes != 1) errors.Add($"capability '{cap}' must appear in exactly one of broadAccess (one group), labels, fileAccess.kinds, informational (found {homes})");
         }
         var producible = ProducibleCaps.ToHashSet();
         foreach (var g in this.Groups) {
-            if (string.IsNullOrWhiteSpace(g.Name) || string.IsNullOrWhiteSpace(g.Summary)) errors.Add($"fullAccess group '{g.Id}' needs a name and a summary");
-            if (g.Reasons.Count == 0) errors.Add($"fullAccess group '{g.Id}' has no reasons");
+            if (string.IsNullOrWhiteSpace(g.Name) || string.IsNullOrWhiteSpace(g.Summary)) errors.Add($"broadAccess group '{g.Id}' needs a name and a summary");
+            if (g.Reasons.Count == 0) errors.Add($"broadAccess group '{g.Id}' has no reasons");
             foreach (var (key, text) in g.Reasons) {
-                if (!producible.Contains(key) && !Findings.Contains(key)) errors.Add($"fullAccess.{g.Id} entry '{key}' is neither a capability nor a finding");
-                if (string.IsNullOrWhiteSpace(text)) errors.Add($"fullAccess.{g.Id} entry '{key}' has no text");
+                if (!producible.Contains(key) && !Findings.Contains(key)) errors.Add($"broadAccess.{g.Id} entry '{key}' is neither a capability nor a finding");
+                if (string.IsNullOrWhiteSpace(text)) errors.Add($"broadAccess.{g.Id} entry '{key}' has no text");
             }
         }
         foreach (var f in Findings) {
             int homes = Groups(f);
-            if (homes != 1) errors.Add($"finding '{f}' must appear in exactly one fullAccess group (found {homes})");
+            if (homes != 1) errors.Add($"finding '{f}' must appear in exactly one broadAccess group (found {homes})");
         }
         foreach (var name in this.Groups.GroupBy(g => g.Name, StringComparer.Ordinal).Where(g => g.Count() > 1))
-            errors.Add($"the fullAccess group name '{name.Key}' is used more than once");
+            errors.Add($"the broadAccess group name '{name.Key}' is used more than once");
         // Each reason is shown to the user on its own: two that read the same cannot be told apart.
         foreach (var text in this.Groups.SelectMany(g => g.Reasons.Values).GroupBy(t => t, StringComparer.Ordinal).Where(g => g.Count() > 1))
-            errors.Add($"the reason text '{text.Key}' is used more than once in fullAccess");
+            errors.Add($"the reason text '{text.Key}' is used more than once in broadAccess");
         // Results are keyed by label id: an id names one label, and reads as one (lowercase words and dashes).
         foreach (var l in Labels) {
             if (!Regex.IsMatch(l.Id, "^[a-z][a-z0-9]*(-[a-z0-9]+)*$")) errors.Add($"label id '{l.Id}' must be lowercase words joined by dashes");
@@ -299,16 +299,16 @@ internal sealed class Policy {
         foreach (var cap in labelled.Concat(Informational).Concat(FileKinds.Keys))
             if (!producible.Contains(cap)) errors.Add($"'{cap}' is referenced but no rule produces it");
         foreach (var c in Combinations) {
-            if (RaisesTier(c.Id) || Combinations.Count(x => x.Id == c.Id) > 1) errors.Add($"fullAccessCombinations id '{c.Id}' is not unique");
-            if (string.IsNullOrWhiteSpace(c.Text) || FullAccess.Values.Contains(c.Text) || Combinations.Count(x => x.Text == c.Text) > 1)
-                errors.Add($"fullAccessCombinations '{c.Id}' needs a text of its own");
-            if (!this.Groups.Any(g => g.Id == c.Group)) errors.Add($"fullAccessCombinations '{c.Id}' names group '{c.Group}', which is not a fullAccess group");
-            if (c.Caps.Count < 2 || c.Caps.Distinct().Count() != c.Caps.Count) errors.Add($"fullAccessCombinations '{c.Id}' needs at least two different capabilities");
+            if (RaisesTier(c.Id) || Combinations.Count(x => x.Id == c.Id) > 1) errors.Add($"broadAccessCombinations id '{c.Id}' is not unique");
+            if (string.IsNullOrWhiteSpace(c.Text) || BroadAccess.Values.Contains(c.Text) || Combinations.Count(x => x.Text == c.Text) > 1)
+                errors.Add($"broadAccessCombinations '{c.Id}' needs a text of its own");
+            if (!this.Groups.Any(g => g.Id == c.Group)) errors.Add($"broadAccessCombinations '{c.Id}' names group '{c.Group}', which is not a broadAccess group");
+            if (c.Caps.Count < 2 || c.Caps.Distinct().Count() != c.Caps.Count) errors.Add($"broadAccessCombinations '{c.Id}' needs at least two different capabilities");
             foreach (var cap in c.Caps) {
-                if (!producible.Contains(cap)) errors.Add($"fullAccessCombinations '{c.Id}' references '{cap}', which no rule produces");
-                // A Full-access capability decides the tier on its own; a combination is made of
+                if (!producible.Contains(cap)) errors.Add($"broadAccessCombinations '{c.Id}' references '{cap}', which no rule produces");
+                // A Broad-access capability decides the tier on its own; a combination is made of
                 // capabilities that are Limited access one by one.
-                else if (GroupOf(cap) is { } g) errors.Add($"fullAccessCombinations '{c.Id}' references '{cap}', which is Full access on its own ({g.Name})");
+                else if (GroupOf(cap) is { } g) errors.Add($"broadAccessCombinations '{c.Id}' references '{cap}', which is Broad access on its own ({g.Name})");
             }
         }
         foreach (var o in CodeOrigins)
@@ -322,10 +322,10 @@ internal sealed class Policy {
             if (x.Pattern.Params != null || x.Pattern.Arity >= 0) errors.Add($"{what} cannot use a parameter list or arity: profiles merge overloads");
             if (x.Caps.Count == 0) errors.Add($"{what} lists no capabilities");
             foreach (var cap in x.Caps)
-                if (!RaisesTier(cap) && !labelled.Contains(cap)) errors.Add($"{what} lists '{cap}', which is not a Full-access capability, finding or label capability");
+                if (!RaisesTier(cap) && !labelled.Contains(cap)) errors.Add($"{what} lists '{cap}', which is not a Broad-access capability, finding or label capability");
             if (x.Library == null && x.Caps.Any(Findings.Contains)) errors.Add($"{what} lists a finding; game profiles carry capabilities only");
             if (x.As != null && !labelled.Contains(x.As) && !(x.Library == null && RaisesTier(x.As) && !Findings.Contains(x.As)))
-                errors.Add($"{what} passes on '{x.As}' instead, which is not a label capability (or, for the game, a Full-access capability)");
+                errors.Add($"{what} passes on '{x.As}' instead, which is not a label capability (or, for the game, a Broad-access capability)");
             if (x.AtCall && x.Library == null) errors.Add($"{what} is marked atCall, which only a trusted-library exemption can be");
             if (string.IsNullOrWhiteSpace(x.Reason)) errors.Add($"{what} gives no reason");
         }

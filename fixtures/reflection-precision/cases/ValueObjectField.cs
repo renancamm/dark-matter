@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Near miss (D5): the game field is declared as object, which bounds nothing. Expected: Full access, "Uses
+// Near miss (D5): the game field is declared as object, which bounds nothing. Expected: Broad access, "Uses
 // reflection the check cannot trace".
 public static class ValueObjectField {
     public static void Go() {

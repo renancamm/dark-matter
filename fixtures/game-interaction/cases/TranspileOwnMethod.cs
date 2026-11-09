@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // A transpiler on the mod's own method: the check reads the mod's code as written, and what it
-// proved on it does not hold once it is rewritten. Expected: Full access, system access, "Rewrites
+// proved on it does not hold once it is rewritten. Expected: Broad access, system access, "Rewrites
 // code other than the game's with a Harmony transpiler" (G5a: transpiler placement by target route).
 using System.Collections.Generic;
 using HarmonyLib;

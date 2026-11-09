@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control for TrustedIgnoreCase: the same lookup by the member's exact name. Expected: Full access,
+// Control for TrustedIgnoreCase: the same lookup by the member's exact name. Expected: Broad access,
 // "Uses reflection the check cannot trace".
 using System.Reflection;
 

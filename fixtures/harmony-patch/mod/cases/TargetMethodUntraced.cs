@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The patch target comes from a TargetMethod that picks a method of a type found by enumeration.
-// Harmony replaces whatever it returns. Expected: Full access.
+// Harmony replaces whatever it returns. Expected: Broad access.
 using System.Reflection;
 using HarmonyLib;
 

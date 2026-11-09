@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // A transpiler that writes an instruction's operand through the reference CodeMatcher.Operand
-// returns. The operand is a method the check cannot trace. Expected: Full access, "Uses reflection the
+// returns. The operand is a method the check cannot trace. Expected: Broad access, "Uses reflection the
 // check cannot trace" (G5a).
 using System;
 using System.Collections.Generic;

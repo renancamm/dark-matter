@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Near miss (D7): the target comes from a TargetMethod, not from the attributes. Expected: Full access, "Uses
+// Near miss (D7): the target comes from a TargetMethod, not from the attributes. Expected: Broad access, "Uses
 // reflection the check cannot trace".
 using System.Reflection;
 using HarmonyLib;

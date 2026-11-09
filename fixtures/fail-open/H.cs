@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Access the analyzer cannot inspect. Every case here must place the assembly in Full access.
+// Access the analyzer cannot inspect. Every case here must place the assembly in Broad access.
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;

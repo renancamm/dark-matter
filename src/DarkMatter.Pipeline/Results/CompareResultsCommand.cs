@@ -4,22 +4,25 @@ using System.Text.Json;
 namespace DarkMatter.Pipeline.Results;
 
 /// <summary>
-/// <c>darkmatter-pipeline compare-results</c>: tier, label and Full-access reason counts (by group) of
+/// <c>darkmatter-pipeline compare-results</c>: tier, label and Broad-access reason counts (by group) of
 /// one results file (the <c>--json</c> output of <c>darkmatter analyze --manifest</c>), or of two, and
-/// the mods whose tier or reason groups changed. A Full-access mod whose reasons move from one group
+/// the mods whose tier or reason groups changed. A Broad-access mod whose reasons move from one group
 /// to another (deep game access only, then system access too) keeps its tier, so it is listed apart.
-/// Results from before policy 13 have four tiers and two flat reason lists, <c>fullAccess</c> and
-/// <c>unverified</c> (absent before policy 9): their tiers read as the new ones they became, and their
-/// lists as groups named "full-access" and "unverified".
+/// Results from before policy 36 call the top tier "full-access" and its reason groups
+/// <c>fullAccess</c>; they read as "broad-access" and <c>broadAccess</c>. Results from before policy 13
+/// have four tiers and two flat reason lists, <c>fullAccess</c> and <c>unverified</c> (absent before
+/// policy 9): their tiers read as the new ones they became, and their lists as groups named
+/// "broad-access" and "unverified".
 /// </summary>
 internal static class CompareResultsCommand {
-    static readonly string[] Tiers = ["no-code", "limited-access", "full-access"];
+    static readonly string[] Tiers = ["no-code", "limited-access", "broad-access"];
 
-    // Tiers before policy 13.
+    // Tiers before policy 13, and the top tier's id before policy 36.
     static readonly Dictionary<string, string> OldTiers = new(StringComparer.Ordinal) {
         ["content-only"] = "no-code",
         ["known-access"] = "limited-access",
-        ["unverified"] = "full-access",
+        ["unverified"] = "broad-access",
+        ["full-access"] = "broad-access",
     };
 
     public static int Run(IReadOnlyList<string> argv) {
@@ -54,10 +57,10 @@ internal static class CompareResultsCommand {
         if (changed == 0) Console.WriteLine("  none");
 
         Console.WriteLine();
-        Console.WriteLine("## reason group changes (Full access in both)");
+        Console.WriteLine("## reason group changes (Broad access in both)");
         changed = 0;
         foreach (var name in names) {
-            if (!m1.TryGetValue(name, out var a) || !m2.TryGetValue(name, out var b) || Tier(a) != "full-access" || Tier(b) != "full-access") continue;
+            if (!m1.TryGetValue(name, out var a) || !m2.TryGetValue(name, out var b) || Tier(a) != "broad-access" || Tier(b) != "broad-access") continue;
             var g1 = string.Join(", ", Reasons(a).Select(r => r.Group).Distinct());
             var g2 = string.Join(", ", Reasons(b).Select(r => r.Group).Distinct());
             if (g1 == g2) continue;
@@ -91,17 +94,18 @@ internal static class CompareResultsCommand {
     static IEnumerable<string> Labels(JsonElement mod) =>
         mod.ValueKind == JsonValueKind.Object && mod.TryGetProperty("labels", out var items) ? Texts(items, "labels") : throw new InvalidDataException("a mod has no labels list");
 
-    /// <summary>A mod's Full-access reasons with their group, in the order of the result.</summary>
+    /// <summary>A mod's Broad-access reasons with their group, in the order of the result.</summary>
     static IEnumerable<(string Group, string Text)> Reasons(JsonElement mod) {
-        if (mod.ValueKind != JsonValueKind.Object || !mod.TryGetProperty("fullAccess", out var full))
-            throw new InvalidDataException("a mod has no fullAccess list");
-        foreach (var e in full.EnumerateArray()) {
+        if (mod.ValueKind != JsonValueKind.Object
+            || !(mod.TryGetProperty("broadAccess", out var broad) || mod.TryGetProperty("fullAccess", out broad)))  // fullAccess: before policy 36
+            throw new InvalidDataException("a mod has no broadAccess list");
+        foreach (var e in broad.EnumerateArray()) {
             if (e.TryGetProperty("reasons", out var reasons)) {
-                var group = Str(e, "group") ?? throw new InvalidDataException("a fullAccess group has no id");
-                foreach (var t in Texts(reasons, "fullAccess")) yield return (group, t);
+                var group = Str(e, "group") ?? throw new InvalidDataException("a broadAccess group has no id");
+                foreach (var t in Texts(reasons, "broadAccess")) yield return (group, t);
             } else {
                 // Before policy 13: a flat list.
-                yield return ("full-access", Str(e, "text") ?? throw new InvalidDataException("a fullAccess entry has no text"));
+                yield return ("broad-access", Str(e, "text") ?? throw new InvalidDataException("a broadAccess entry has no text"));
             }
         }
         if (mod.TryGetProperty("unverified", out var unverified))

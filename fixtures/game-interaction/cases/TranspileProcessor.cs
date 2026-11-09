@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A transpiler added with PatchProcessor.AddTranspiler. The check does not link the processor's
 // original (here a game method) to the transpiler, so the rewritten code is not placed in the game.
-// Expected: Full access, system access, "Rewrites code other than the game's with a Harmony
+// Expected: Broad access, system access, "Rewrites code other than the game's with a Harmony
 // transpiler" (G5a: transpiler placement by target route).
 using System.Collections.Generic;
 using HarmonyLib;

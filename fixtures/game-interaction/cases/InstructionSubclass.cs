@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // A transpiler that returns an instruction of the mod's own CodeInstruction subclass. The operand it
 // gives the base constructor is inert; the subclass itself is what the check cannot follow. Expected:
-// Full access, "Uses reflection the check cannot trace" (G5a).
+// Broad access, "Uses reflection the check cannot trace" (G5a).
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection.Emit;

@@ -3,10 +3,10 @@ using System.Text.Json.Nodes;
 
 namespace DarkMatter.Pipeline.Scan;
 
-/// <summary>A label or a Full-access reason of a result: id, text and evidence.</summary>
+/// <summary>A label or a Broad-access reason of a result: id, text and evidence.</summary>
 internal sealed record FindingView(string Id, string Text, int Count, IReadOnlyList<string> Evidence);
 
-/// <summary>A Full-access group of a result, with its reasons.</summary>
+/// <summary>A Broad-access group of a result, with its reasons.</summary>
 internal sealed record GroupView(string Id, string Name, string Summary, IReadOnlyList<FindingView> Reasons);
 
 /// <summary>A code file of a result.</summary>
@@ -14,8 +14,10 @@ internal sealed record FileView(string Path, string? Sha256, string? Name, strin
 
 /// <summary>
 /// One mod's result as <c>darkmatter analyze --json</c> writes it (policy 13 and later: three tiers,
-/// Full-access reasons in groups), read for display and comparison. Results from policy 13 have no
-/// label or reason ids and at most five pieces of evidence; their text stands in for the id.
+/// Broad-access reasons in groups), read for display and comparison. Results from policy 13 have no
+/// label or reason ids and at most five pieces of evidence; their text stands in for the id. Results
+/// from before policy 36 call the top tier "full-access" and its groups "fullAccess"; they read as
+/// "broad-access" and "broadAccess", so a rename alone is not a difference.
 /// </summary>
 internal sealed record ResultView(
     string Tier,
@@ -29,7 +31,8 @@ internal sealed record ResultView(
     static readonly Dictionary<string, string> OldTiers = new(StringComparer.Ordinal) {
         ["content-only"] = "no-code",
         ["known-access"] = "limited-access",
-        ["unverified"] = "full-access",
+        ["unverified"] = "broad-access",
+        ["full-access"] = "broad-access",  // before policy 36
     };
 
     public static ResultView From(JsonNode? node) {
@@ -37,13 +40,13 @@ internal sealed record ResultView(
         var tier = Str(o, "tier") ?? throw new InvalidDataException("a result has no tier");
         tier = OldTiers.GetValueOrDefault(tier, tier);
         var groups = new List<GroupView>();
-        foreach (var g in Arr(o, "fullAccess").OfType<JsonObject>()) {
+        foreach (var g in Arr(o, o.ContainsKey("broadAccess") ? "broadAccess" : "fullAccess").OfType<JsonObject>()) {
             if (g["reasons"] is JsonArray reasons)
-                groups.Add(new GroupView(Str(g, "group") ?? "full-access", Str(g, "name") ?? Str(g, "group") ?? "Full access", Str(g, "summary") ?? "",
+                groups.Add(new GroupView(Str(g, "group") ?? "broad-access", Str(g, "name") ?? Str(g, "group") ?? "Broad access", Str(g, "summary") ?? "",
                     [.. reasons.OfType<JsonObject>().Select(Finding)]));
             else
                 // Before policy 13: a flat list of reasons.
-                groups.Add(new GroupView("full-access", "Full access", "", [Finding(g)]));
+                groups.Add(new GroupView("broad-access", "Broad access", "", [Finding(g)]));
         }
         var old = Arr(o, "unverified").OfType<JsonObject>().Select(Finding).ToList();
         if (old.Count > 0) groups.Add(new GroupView("unverified", "Unverified", "", old));
@@ -70,7 +73,7 @@ internal sealed record ResultView(
 
     static JsonArray Arr(JsonObject o, string name) => o[name] as JsonArray ?? [];
 
-    /// <summary>Every Full-access reason, with its group.</summary>
+    /// <summary>Every Broad-access reason, with its group.</summary>
     public IEnumerable<(GroupView Group, FindingView Reason)> Reasons => Groups.SelectMany(g => g.Reasons.Select(r => (g, r)));
 }
 

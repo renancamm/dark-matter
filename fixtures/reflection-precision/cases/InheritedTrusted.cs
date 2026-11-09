@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7b): reflection on the mod's own type finds a static method it inherits from a trusted library's
-// type (the Harmony stand-in's StartsHost), which starts a program. Expected: Full access, "Starts other
+// type (the Harmony stand-in's StartsHost), which starts a program. Expected: Broad access, "Starts other
 // programs" (before: Limited access).
 using System.Reflection;
 

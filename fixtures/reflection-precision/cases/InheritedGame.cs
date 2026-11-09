@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7 review, H7b): reflection on the mod's own type finds a static method it inherits from a game base
-// type, which starts a program (KSA.StartsBase::InheritedRun). Expected: Full access, "Starts other programs"
+// type, which starts a program (KSA.StartsBase::InheritedRun). Expected: Broad access, "Starts other programs"
 // (before: Limited access, nothing: a lookup on a mod type reached only the mod's own code).
 using System.Reflection;
 

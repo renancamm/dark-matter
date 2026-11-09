@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// A trusted helper library: one member reaches a process start only through an override (Full
-// access), one builds code at run time (Full access unless the policy exempts it).
+// A trusted helper library: one member reaches a process start only through an override (Broad
+// access), one builds code at run time (Broad access unless the policy exempts it).
 using System.Diagnostics;
 using System.Reflection.Emit;
 

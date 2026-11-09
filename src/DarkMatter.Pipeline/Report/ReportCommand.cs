@@ -66,7 +66,7 @@ internal static class ReportCommand {
     static string TierClass(string tier) => tier switch {
         "no-code" => "t-none",
         "limited-access" => "t-limited",
-        _ => "t-full",
+        _ => "t-broad",
     };
 
     public static string Render(JsonObject run, string title) {
@@ -82,7 +82,7 @@ internal static class ReportCommand {
 
         // Counts.
         b.Append("<section><h2>Summary</h2>\n<div class=\"tiles\">");
-        foreach (var (tier, name) in new[] { ("no-code", "No code"), ("limited-access", "Limited access"), ("full-access", "Full access") })
+        foreach (var (tier, name) in new[] { ("no-code", "No code"), ("limited-access", "Limited access"), ("broad-access", "Broad access") })
             b.Append(CultureInfo.InvariantCulture, $"<div class=\"tile {TierClass(tier)}\"><span class=\"n\">{withResult.Count(x => x.View.Tier == tier)}</span><span>{H(name)}</span></div>");
         b.Append("</div>\n");
         var skipped = entries.Count(e => Str(e, "status") == "skipped");
@@ -93,7 +93,7 @@ internal static class ReportCommand {
         b.Append(".</p>\n");
         var groupCounts = withResult.SelectMany(x => x.View.Groups.Select(g => g.Name)).GroupBy(n => n).OrderByDescending(g => g.Count()).ToList();
         if (groupCounts.Count > 0) {
-            b.Append("<p>Full-access mods by reason group (a mod counts in every group it has a reason in): ");
+            b.Append("<p>Broad-access mods by reason group (a mod counts in every group it has a reason in): ");
             b.Append(string.Join(", ", groupCounts.Select(g => $"{H(g.Key)} {g.Count()}")));
             b.Append(".</p>\n");
         }
@@ -239,13 +239,13 @@ internal static class ReportCommand {
         <h2>How to read this report</h2>
         <p>Each mod is placed in one of three tiers by what its code can do, as far as the check can account for it.
         <strong>A tier is not a judgement of whether a mod is harmful.</strong> It says what the mod <em>can</em> do, not what it does.
-        Many widely used mods are Full access (loaders, scripting bridges, physics mods, mods with native libraries); for those, trust rests on the author rather than on the check.</p>
+        Many widely used mods are Broad access (loaders, scripting bridges, physics mods, mods with native libraries); for those, trust rests on the author rather than on the check.</p>
         <table>
         <tr><td><span class="badge t-none">No code</span></td><td>Ships no code: parts, planets, textures, sounds. It can't run programs.</td></tr>
         <tr><td><span class="badge t-limited">Limited access</span></td><td>Ships code, and everything it can run was looked at. Its list of what it can do is complete.</td></tr>
-        <tr><td><span class="badge t-full">Full access</span></td><td>Something in the mod can reach beyond what the check can list, or the check could not look at all. The list is what it saw, not a complete list.</td></tr>
+        <tr><td><span class="badge t-broad">Broad access</span></td><td>Something in the mod can reach beyond what the check can list, or the check could not look at all. The list is what it saw, not a complete list.</td></tr>
         </table>
-        <p>A Full-access mod says why, in one or more groups. The groups explain the tier; they are not a scale.
+        <p>A Broad-access mod says why, in one or more groups. The groups explain the tier; they are not a scale.
         <strong>Deep game access</strong>: works with the game's code and memory in ways the check can't follow all the way, as ordinary modding often does.
         <strong>System access</strong>: uses features that can reach anything on the computer, such as native code or starting programs.
         <strong>Couldn't be fully checked</strong>: part of the mod couldn't be inspected; often a packaging matter the author can fix.</p>
@@ -256,9 +256,9 @@ internal static class ReportCommand {
 
     const string Css = """
         :root{--bg:#fbfbfa;--fg:#1d1d1f;--muted:#5f6368;--card:#fff;--line:#e3e3e0;--code:#f3f3f1;
-        --none:#5f6b7a;--none-bg:#eef1f4;--lim:#1f6f43;--lim-bg:#e5f3ea;--full:#a33a1f;--full-bg:#fbe9e3}
+        --none:#5f6b7a;--none-bg:#eef1f4;--lim:#1f6f43;--lim-bg:#e5f3ea;--broad:#a33a1f;--broad-bg:#fbe9e3}
         @media (prefers-color-scheme:dark){:root{--bg:#161618;--fg:#ececec;--muted:#a0a3a8;--card:#1f1f22;--line:#34343a;--code:#2a2a2e;
-        --none:#aab4c0;--none-bg:#2a2f36;--lim:#7fd3a0;--lim-bg:#1c3326;--full:#f2a58e;--full-bg:#3b231c}}
+        --none:#aab4c0;--none-bg:#2a2f36;--lim:#7fd3a0;--lim-bg:#1c3326;--broad:#f2a58e;--broad-bg:#3b231c}}
         *{box-sizing:border-box}
         body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
         main{max-width:960px;margin:0 auto;padding:24px 16px 64px}
@@ -268,17 +268,17 @@ internal static class ReportCommand {
         .explainer{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:4px 18px 12px}
         .explainer table{border-collapse:collapse}.explainer td{padding:4px 10px 4px 0;vertical-align:top}
         .badge{display:inline-block;padding:1px 9px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
-        .badge.t-none{color:var(--none);background:var(--none-bg)}.badge.t-limited{color:var(--lim);background:var(--lim-bg)}.badge.t-full{color:var(--full);background:var(--full-bg)}
+        .badge.t-none{color:var(--none);background:var(--none-bg)}.badge.t-limited{color:var(--lim);background:var(--lim-bg)}.badge.t-broad{color:var(--broad);background:var(--broad-bg)}
         .tiles{display:flex;gap:10px;flex-wrap:wrap}
         .tile{flex:1 1 140px;border-radius:10px;padding:10px 14px;display:flex;flex-direction:column}
         .tile .n{font-size:28px;font-weight:700}
-        .tile.t-none{background:var(--none-bg);color:var(--none)}.tile.t-limited{background:var(--lim-bg);color:var(--lim)}.tile.t-full{background:var(--full-bg);color:var(--full)}
+        .tile.t-none{background:var(--none-bg);color:var(--none)}.tile.t-limited{background:var(--lim-bg);color:var(--lim)}.tile.t-broad{background:var(--broad-bg);color:var(--broad)}
         table.index{width:100%;border-collapse:collapse;font-size:14px}
         table.index th,table.index td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
         table.index a{color:inherit}
         @media (max-width:600px){table.index th:nth-child(4),table.index td:nth-child(4){display:none}}
         .card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:10px;padding:14px 18px;margin:14px 0}
-        .card.t-none{border-left-color:var(--none)}.card.t-limited{border-left-color:var(--lim)}.card.t-full{border-left-color:var(--full)}
+        .card.t-none{border-left-color:var(--none)}.card.t-limited{border-left-color:var(--lim)}.card.t-broad{border-left-color:var(--broad)}
         .card .head{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
         .summary{margin:6px 0}.group-summary{color:var(--muted);font-size:13px;margin:0 0 4px}
         ul.findings{list-style:none;padding:0;margin:0}
@@ -289,7 +289,7 @@ internal static class ReportCommand {
         ul.evidence,ul.files{margin:6px 0 6px 6px;padding-left:16px;font-size:12px}
         ul.evidence li{margin:2px 0}
         .more,.none{color:var(--muted)}
-        .warnings{color:var(--full);font-size:13px}
+        .warnings{color:var(--broad);font-size:13px}
         footer{margin-top:40px;border-top:1px solid var(--line);padding-top:8px}
         footer dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:13px}
         footer dt{color:var(--muted)}footer dd{margin:0;overflow-wrap:anywhere}

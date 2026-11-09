@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Starts a program, or opens a link whose target is not fixed. Full access.
+// Starts a program, or opens a link whose target is not fixed. Broad access.
 using System.Diagnostics;
 
 public class Programs {

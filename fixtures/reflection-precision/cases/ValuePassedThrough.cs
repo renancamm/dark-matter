@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Negative (D10): the typed value goes through a method of the mod declared to return object; the check does not
-// carry the type through calls. Expected: Full access, "Uses reflection the check cannot trace".
+// carry the type through calls. Expected: Broad access, "Uses reflection the check cannot trace".
 public static class ValuePassedThrough {
     static object Identity(object value) => value;
 

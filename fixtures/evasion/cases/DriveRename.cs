@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// H9 (policy 29): renaming a volume is a change to the computer the policy does not classify: still Full
+// H9 (policy 29): renaming a volume is a change to the computer the policy does not classify: still Broad
 // access, not fully checked (the DriveInfo queries are user-info, DriveList).
 using System.IO;
 

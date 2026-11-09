@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7b review): a type nested in the mod's own type derives from a game type, and is found from the outer
 // type by GetNestedType, which the walker counts as the outer type. The lookup on it finds the static method it
-// inherits, which starts a program (KSA.StartsBase::InheritedRun). Expected: Full access, "Starts other programs"
+// inherits, which starts a program (KSA.StartsBase::InheritedRun). Expected: Broad access, "Starts other programs"
 // (policy 25: Limited access, nothing: only the outer type's own base types were followed).
 using System.Reflection;
 

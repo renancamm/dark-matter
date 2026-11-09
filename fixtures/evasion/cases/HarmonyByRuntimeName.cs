@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Probe case: Harmony's "Type:Member" lookup with a name built at run time. Expected: Full access.
+// Probe case: Harmony's "Type:Member" lookup with a name built at run time. Expected: Broad access.
 using HarmonyLib;
 
 public class HarmonyByRuntimeNameCase {

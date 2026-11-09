@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Benign control for H7's member-scoped reach (F1): GetFields on a type reaches no method of it but its
 // type initializer, so its private helper's Type parameter is what its callers pass (KSA.UiText, whose
-// Draw is harmless). Expected: Limited access, no labels (before H7: Full access, "Uses reflection the
+// Draw is harmless). Expected: Limited access, no labels (before H7: Broad access, "Uses reflection the
 // check cannot trace": every method of a type reached by reflection could be given any argument).
 using System;
 using System.Reflection;

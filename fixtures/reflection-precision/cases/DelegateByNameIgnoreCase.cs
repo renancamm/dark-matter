@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Delegate.CreateDelegate(Type, Type, string, ignoreCase: true, throwOnBindFailure) under another
-// spelling. Expected: Full access, "Starts other programs" (H1 and H3).
+// spelling. Expected: Broad access, "Starts other programs" (H1 and H3).
 using System;
 
 public static class DelegateByNameIgnoreCase {

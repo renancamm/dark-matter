@@ -21,7 +21,7 @@ internal sealed record LibraryProfile(
 
     /// <summary>
     /// Profiles a set of trusted library files together, so calls between them are followed.
-    /// Unlike the game-API map, findings are kept (Full-access ones): a library is
+    /// Unlike the game-API map, findings are kept (Broad-access ones): a library is
     /// third-party code trusted to be the build its author published, not to be harmless, so a
     /// mod calling a member gets everything that member can reach, less what the policy's
     /// <c>libraries.exempt</c> stops.
@@ -54,7 +54,7 @@ internal sealed record LibraryProfile(
                 foreach (var (cap, detail) in access.Reach(r.Type, r.Assembly, provenance.Members(r.Members, r.NameNode, r.Lookup), r.PatchTarget ? TypeAccess.PatchUse(r.Patch) : TypeUse.Reflection, frameworkCaps: false, r.Detail, r.NullTestOnly, r.Derived))
                     Seed(m, cap, detail);
         var pointerFields = set.SelectMany(a => a.PointerFields).ToHashSet(StringComparer.Ordinal);
-        // A transpiler that rewrites anything but the game's code is Full access, as for a mod (see
+        // A transpiler that rewrites anything but the game's code is Broad access, as for a mod (see
         // Evaluator.RewriteTargets); Harmony's own patching members are exempt (libraries.exempt).
         bool rewrites = set.SelectMany(a => a.Caps).Concat(methods.SelectMany(m => m.Caps)).Any(e => e.Cap == "code-rewrite");
         foreach (var m in methods)

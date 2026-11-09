@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// A prefix on Process.Start, which can change what is started. Expected: Full access.
+// A prefix on Process.Start, which can change what is started. Expected: Broad access.
 using System.Diagnostics;
 using HarmonyLib;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7 review): as ReflectedPathHelper, for a helper that creates a folder and opens it. Opening a folder
-// the check cannot place in the mod's or the game's folders counts as starting a program. Expected: Full
+// the check cannot place in the mod's or the game's folders counts as starting a program. Expected: Broad
 // access, "Starts other programs" (before: Limited access, "Opens its own or the game's folders").
 using System;
 using System.Diagnostics;

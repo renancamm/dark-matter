@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Near miss (D7): [HarmonyArgument] gives the parameter named __instance one of the original's arguments instead.
-// Expected: Full access, "Uses reflection the check cannot trace".
+// Expected: Broad access, "Uses reflection the check cannot trace".
 using HarmonyLib;
 
 [HarmonyPatch(typeof(KSA.Universe), nameof(KSA.Universe.Find))]

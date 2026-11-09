@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // H9 (policy 29): named kernel objects are shared with every program of the user: "Communicates with
-// other programs on your computer" (ipc). Before H9: unclassified (Full access, not fully checked).
+// other programs on your computer" (ipc). Before H9: unclassified (Broad access, not fully checked).
 using System.Threading;
 
 public static class IpcNamed {

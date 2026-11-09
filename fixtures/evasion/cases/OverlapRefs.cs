@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Probe case: two reference fields at the same offset of an explicit-layout struct. Writing one and
 // reading the other treats a string as a Box, a type confusion with no API call.
-// Expected: Full access, raw memory only.
+// Expected: Broad access, raw memory only.
 using System.Runtime.InteropServices;
 
 public sealed class OverlapBox { public long Value; }

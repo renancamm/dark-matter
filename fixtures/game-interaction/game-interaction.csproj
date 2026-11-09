@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- One assembly per case: dotnet build -p:Case=TranspilerOperand. Ordinary game interaction that
-       policy 11 no longer counts as Full access (benign controls), and the real APIs that still are.
+       policy 11 no longer counts as Broad access (benign controls), and the real APIs that still are.
        References the Harmony stand-in (0Harmony) and the game stand-in (KSA), like a mod built
        against the real ones; a case that uses neither does not reference them in its metadata. -->
   <PropertyGroup>

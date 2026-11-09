@@ -23,9 +23,9 @@ var setValue = typeof(PropertyInfo).GetMethod("SetValue", [typeof(object), typeo
 // ProbeLoopStloc: a member array (holding a lookup on the probe's own type) is carried on the stack
 // along a conditional backward branch. At the loop head a member found on an object's run-time type is
 // stored into it through that stack copy; after the loop the array's element is invoked from the local.
-// The fall-through copy is consumed by a stloc. Expected: Full access, "Uses reflection the check cannot
+// The fall-through copy is consumed by a stloc. Expected: Broad access, "Uses reflection the check cannot
 // trace" (before H7: Limited access, nothing labelled: the stack copy along the backward branch was never
-// dropped). ProbeStraight: the same store in straight-line code (control: Full access, before and after).
+// dropped). ProbeStraight: the same store in straight-line code (control: Broad access, before and after).
 foreach (var variant in new[] { "LoopStloc", "Straight" }) {
     var (ab, mb) = Assembly("Probe" + variant);
     var tb = mb.DefineType("Probe" + variant + "Code", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
@@ -72,9 +72,9 @@ foreach (var variant in new[] { "LoopStloc", "Straight" }) {
 
 // AccessorOdd: a property whose setter is a private method named Run, not set_P. The setter takes a Type
 // and invokes a method found on it; it is reached only through GetProperty("P").SetValue, which runs the
-// setter the metadata names. Expected: Full access, "Uses reflection the check cannot trace" (a lookup by
+// setter the metadata names. Expected: Broad access, "Uses reflection the check cannot trace" (a lookup by
 // the property's name reaches its accessors whatever they are called; H7's F1 guard 3). AccessorPlain: the
-// same with the setter named set_P (Full access).
+// same with the setter named set_P (Broad access).
 foreach (var variant in new[] { "Odd", "Plain" }) {
     var (ab, mb) = Assembly("Accessor" + variant);
     var r = mb.DefineType("AccessorHolder" + variant, TypeAttributes.NotPublic | TypeAttributes.Abstract | TypeAttributes.Sealed);
@@ -98,7 +98,7 @@ foreach (var variant in new[] { "Odd", "Plain" }) {
 }
 
 // BranchIntoInstruction: a branch to the second byte of a ldc.i4's operand. Read from there, the bytes
-// are other instructions (nop, nop, ret) than the ones read in order. Expected: Full access, "Contains code
+// are other instructions (nop, nop, ret) than the ones read in order. Expected: Broad access, "Contains code
 // the check cannot read" (H7: a branch target must be an instruction).
 {
     var (ab, mb) = Assembly("BranchIntoInstruction");
@@ -114,7 +114,7 @@ foreach (var variant in new[] { "Odd", "Plain" }) {
 }
 // Stackalloc of 1-byte elements with a variable count (H8): `n = arg; localloc n; new Span<T>(p, n)` with no
 // multiply. StackallocByteIl (control): a Span<byte> of the same local, the same store: Limited access,
-// nothing labelled. The negatives keep "Reads or writes memory directly" (Full access): StackallocByteWide,
+// nothing labelled. The negatives keep "Reads or writes memory directly" (Broad access): StackallocByteWide,
 // a Span<int> (4-byte elements over n bytes); StackallocByteAliased, the count local's address is taken
 // elsewhere in the method (it may change between the size and the length); StackallocByteRestored, the
 // count is stored again between them; StackallocByteTruncated, the size is the count cut to a byte
@@ -142,7 +142,7 @@ foreach (var variant in new[] { "Il", "Wide", "Aliased", "Restored", "Truncated"
     ab.Save(Path.Combine(outDir, "StackallocByte" + variant + ".dll"));
 }
 // H8 review: the span's length must be the count's own value. Each negative keeps "Reads or writes memory
-// directly" (Full access): StackallocByteSelfLength, the buffer is duplicated as its own length;
+// directly" (Broad access): StackallocByteSelfLength, the buffer is duplicated as its own length;
 // StackallocByteReloaded, the buffer is kept in a native-int local and that local is loaded as buffer and
 // length; StackallocByteScaledLength, the length is the count times 4 over a buffer of count bytes;
 // StackallocByteZeroScale, the size is the count times 0, converted; StackallocCountReloaded, a byte count
@@ -221,11 +221,11 @@ foreach (var variant in new[] { "FromInt", "FromLdftn" }) {
 // H10b review: a member reference names the probe's own type, which derives from Process and declares Kill(int),
 // for Kill() (the signature Process.Kill has): the runtime looks a member reference up by name and signature
 // through the base types, so it runs Process.Kill(). OverloadOwnType is written calling Process::Kill() and then
-// has that reference's parent changed to the probe's type: Full access, "Calls code that was not analyzed" (before:
+// has that reference's parent changed to the probe's type: Broad access, "Calls code that was not analyzed" (before:
 // Limited access, nothing labelled; a member of that name made it the mod's own code). OverloadOwnMatch, the
 // control, calls its own generic type's Kill(int) through an instantiation (the reference C# writes, with the
 // definition's signature): Limited access, nothing labelled. OverloadOwnInherited (H5 review fix 3, which had no
-// fixture): the same reference through a type that declares no Kill at all: Full access, "Calls code that was not
+// fixture): the same reference through a type that declares no Kill at all: Broad access, "Calls code that was not
 // analyzed". Nothing generated is run.
 foreach (var variant in new[] { "OwnType", "OwnMatch", "OwnInherited" }) {
     var (ab, mb) = Assembly("Overload" + variant);
@@ -258,9 +258,9 @@ foreach (var variant in new[] { "OwnType", "OwnMatch", "OwnInherited" }) {
 // derives from Process and declares Kill(OverloadMarker...); the call is written with that definition's signature,
 // then pointed at the signature of Stop(StringBuilder) after StringBuilder's type reference is turned into a
 // reference into the probe. OverloadOwnEquivalent names OverloadMarkerOwnEquivalent there, the same type: the
-// probe's own Kill, Limited access, nothing labelled (before H12: Full access, "Calls code that was not analyzed",
+// probe's own Kill, Limited access, nothing labelled (before H12: Broad access, "Calls code that was not analyzed",
 // the blobs differ). OverloadOwnUnresolved names a type the probe does not define ("Stop"), which no definition
-// matches: Full access, "Calls code that was not analyzed". Nothing generated is run.
+// matches: Broad access, "Calls code that was not analyzed". Nothing generated is run.
 foreach (var variant in new[] { "OwnEquivalent", "OwnUnresolved" }) {
     var (ab, mb) = Assembly("Overload" + variant);
     var marker = mb.DefineType("OverloadMarker" + variant, TypeAttributes.Public);
@@ -291,8 +291,8 @@ foreach (var variant in new[] { "OwnEquivalent", "OwnUnresolved" }) {
 // not bound the byte-count operand of these two, so a length past the destination is an out-of-bounds write
 // from a valid managed address. Before this review the check flagged them only when the destination address
 // was not a managed reference, so a block copy or fill through the address of a local (ldloca) was Limited
-// access. CpblkManaged and InitblkManaged are that gap (Limited before, Full access / "Reads or writes memory
-// directly" now); CpblkForged, the near-miss, fills from a native int the method is handed and stayed Full
+// access. CpblkManaged and InitblkManaged are that gap (Limited before, Broad access / "Reads or writes memory
+// directly" now); CpblkForged, the near-miss, fills from a native int the method is handed and stayed Broad
 // access throughout. The C# compiler never emits a bare cpblk/initblk. Nothing generated is run.
 foreach (var variant in new[] { "CpblkManaged", "CpblkForged", "InitblkManaged" }) {
     var (ab, mb) = Assembly(variant);

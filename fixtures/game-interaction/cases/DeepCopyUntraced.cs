@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // AccessTools.MakeDeepCopy into the run-time type of an object of unknown type, which the check cannot
-// trace. Expected: Full access, "Uses reflection the check cannot trace" (G5a).
+// trace. Expected: Broad access, "Uses reflection the check cannot trace" (G5a).
 using HarmonyLib;
 
 public static class Copier {

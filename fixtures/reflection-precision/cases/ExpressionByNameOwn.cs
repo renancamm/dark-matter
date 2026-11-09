@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // A private method of the mod reached by Expression.Call(Type, string, ...) with a Type argument
-// no direct caller passes. Expected: Full access, "Uses reflection the check cannot trace"
+// no direct caller passes. Expected: Broad access, "Uses reflection the check cannot trace"
 // (H1a-review XF1Expression; before policy 19, Limited access, no labels).
 using System;
 using System.Linq.Expressions;

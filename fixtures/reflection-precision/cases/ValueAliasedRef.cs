@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Negative (D10): the typed value is stored into a local declared as object after a ref local took that local's
-// address; a store through the ref local replaces it with any object. Expected: Full access, "Uses reflection the
+// address; a store through the ref local replaces it with any object. Expected: Broad access, "Uses reflection the
 // check cannot trace" (before D10 the walker trusted the last object it saw stored into a local whose address was taken).
 public static class ValueAliasedRef {
     public static void Go(object other) {

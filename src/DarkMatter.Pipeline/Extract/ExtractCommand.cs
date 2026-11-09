@@ -70,7 +70,7 @@ internal static class ExtractCommand {
 
     /// <summary>
     /// Extraction limits per mod: nesting depth, bytes written, files written. A mod over a limit
-    /// counts as not extracted (Full access), so <c>scan</c> puts the limits in its scan key and stamp.
+    /// counts as not extracted (Broad access), so <c>scan</c> puts the limits in its scan key and stamp.
     /// The byte limit bounds the disk one mod can fill (extracted trees are kept); the counted bytes,
     /// the file count and the depth are what stop archive bombs.
     /// </summary>
@@ -320,7 +320,7 @@ internal static class ExtractCommand {
             using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             n = f.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
         } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Listed anyway: the analyzer reports a file it cannot read as Full access.
+            // Listed anyway: the analyzer reports a file it cannot read as Broad access.
             return true;
         }
         return CodeMagic.Any(m => n >= m.Length && head.AsSpan(0, m.Length).SequenceEqual(m));

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe case: a MethodInfo field written once from a constant lookup and once from an enumerated
-// type, then invoked through the field. Expected: Full access.
+// type, then invoked through the field. Expected: Broad access.
 using System.Linq;
 using System.Reflection;
 

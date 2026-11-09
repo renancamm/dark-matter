@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The same nested type found with GetMembers() and a filter that requires its name. Expected: Full
+// The same nested type found with GetMembers() and a filter that requires its name. Expected: Broad
 // access, "Starts other programs" (G1a review A8).
 using System;
 using System.Linq;

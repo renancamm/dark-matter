@@ -6,7 +6,7 @@ with a list of what it can do, in the way an app store lists permissions.
 
 > **Status: prototype.** Results are only as complete as the policy's rules. A missing label
 > means the check found nothing, not that nothing is there. Design rule: **every blind spot
-> fails upward, to Full access, never to Limited access or No code.**
+> fails upward, to Broad access, never to Limited access or No code.**
 
 ## Tiers
 
@@ -17,9 +17,9 @@ of whether the mod is harmful, and it says what the mod *can* do, not what it do
 |---|---|---|
 | **No code** | Only adds content. It can't run programs. | Ships no code files: parts, planets, textures, sounds. |
 | **Limited access** | It can only do what's listed. | Ships code, and everything it can run was looked at. The labels are the complete list. |
-| **Full access** | It can do anything a program on your computer can. | Something in the mod can reach beyond what the check can list, or the check could not look at all. The labels are what it saw, not a complete list. |
+| **Broad access** | It can do anything a program on your computer can. | Something in the mod can reach beyond what the check can list, or the check could not look at all. The labels are what it saw, not a complete list. |
 
-A Full-access result says why, in one or more groups. Every group with a reason is listed, so a
+A Broad-access result says why, in one or more groups. Every group with a reason is listed, so a
 mod whose reasons move from one group to another between releases stands out even though its
 tier stays the same.
 
@@ -29,14 +29,14 @@ tier stays the same.
 | **System access** | Uses features that can reach anything on your computer. | native code, starting programs, loading code at run time |
 | **Couldn't be fully checked** | Part of the mod couldn't be inspected. | an unreadable file, a script or installer, an embedded archive |
 
-**The groups explain the tier; they are not a scale.** The claim is the tier: Full access. Deep
+**The groups explain the tier; they are not a scale.** The claim is the tier: Broad access. Deep
 game access means the check's blind spots for this mod are of a kind ordinary modding has, not
 that the mod stays inside the game. Code the check cannot follow can still do anything, and a
 determined author who knows the rules can aim for that group alone. Couldn't be fully checked
 means the check does not know what a part does, not that it does anything; it is often a
 packaging problem the author can fix. Only Limited access says the labels are complete.
 
-Many widely used mods are Full access (loaders, scripting bridges, physics mods, mods that use
+Many widely used mods are Broad access (loaders, scripting bridges, physics mods, mods that use
 native libraries). For those, trust rests on the author rather than on the check.
 
 A reason reached through another member (a framework, game or trusted-library member the mod
@@ -210,7 +210,7 @@ The mod:
 - lists a file that was not analyzed (for example one whose hash changed after extraction)
 
 **Labels**, shown in every tier (the complete list in Limited access, what the check saw in
-Full access):
+Broad access):
 
 | Label | What it covers |
 |---|---|
@@ -245,7 +245,7 @@ decision is then made from that one model, using the rules in
    name: one of the mod's own files (analyzed with it), a trusted library, the game (the game
    profile's assembly list, else the policy's `game.assemblies` patterns), or the .NET shared
    framework the tool runs on. A framework member that matches no capability or `safe` rule,
-   and any reference to an assembly that is none of these, means Full access (couldn't be fully checked). Members are
+   and any reference to an assembly that is none of these, means Broad access (couldn't be fully checked). Members are
    classified by the policy, not derived from the framework's code. A reference that names one of the
    mod's own types for a member neither it nor its base types in the mod define (hand-written
    metadata: the runtime then runs what the type inherits from another assembly) counts as not
@@ -269,7 +269,7 @@ decision is then made from that one model, using the rules in
    in the looked-up type, the mod's or the game's, is searched with what it inherits too, since a nested
    type found from a type counts as that type (policy 26).
    A type name that is not a constant at the call is unresolved and
-   means Full access, and so is one looked up ignoring case or through a `Type.GetType` type or
+   means Broad access, and so is one looked up ignoring case or through a `Type.GetType` type or
    assembly resolver (policy 19). A member name matches ignoring case (`BindingFlags.IgnoreCase`,
    flags that are not a constant, and the by-name expression factories find a member under any
    spelling), and a name ending in `*` is a prefix, as `GetMember` reads it (policy 19).
@@ -281,7 +281,7 @@ decision is then made from that one model, using the rules in
    (`GetMethod`, `AccessTools.Field`, ...) carry that type, and `Invoke`, `GetValue`,
    `SetValue`, `CreateDelegate`, `Activator.CreateInstance(Type)`, Harmony patch methods,
    expression-tree factories (`Expression.Call`, `Field`, `Property`, `New`, ...) and similar
-   calls must act on such a member or type, or they are Full access too. A type created by name
+   calls must act on such a member or type, or they are Broad access too. A type created by name
    (`Assembly.CreateInstance("T")`, `Activator.CreateInstance("Asm", "T")`) reaches its
    constructors (policy 30). Arrays and lists from
    plural lookups (`GetMethods`, `GetProperties`, `AccessTools.GetDeclaredFields`, ...) are
@@ -332,7 +332,7 @@ decision is then made from that one model, using the rules in
    themselves (all versions together, keyed by SHA-256) and records, for every member, the
    capabilities and findings it can reach: through its callees, the overrides a virtual call can
    dispatch to, and its type's static constructor. A mod calling a trusted member gets that
-   member's profile, Full-access capabilities included, merged over every trusted
+   member's profile, Broad-access capabilities included, merged over every trusted
    version (the loader decides which copy is loaded). A call into a library with an unprofiled
    version, or to a member no profiled version has, counts as code that was not analyzed. The policy's
    `libraries.exempt` lists the members whose capability is the library's own job and is
@@ -357,7 +357,7 @@ decision is then made from that one model, using the rules in
    that order and case) is the game's folder; anything else in Documents, and anything under an
    environment variable, is outside the game. Writes into the mod's or
    the game's folders are labelled, because that is where the loader finds code; the policy's
-   `fullAccessCombinations` make such a write (or one outside the game) Full access together
+   `broadAccessCombinations` make such a write (or one outside the game) Broad access together
    with a network connection. The game's own writes there, reached through the game-API map,
    are not labelled. An XML load (which also takes a web address) whose path begins with a folder
    the check traced is a file read, whatever is appended to it; one whose beginning is not traced
@@ -377,7 +377,7 @@ decision is then made from that one model, using the rules in
    whose patch methods can only observe its target passes nothing of a game or trusted-library
    target on. Transpilers on the game's code are deep game access ("Rewrites the game's code ..."), not
    code generation: `OpCodes` and `Label` values are data, and what an instruction refers to is a
-   reflection sink. A transpiler on any other target, or on one the check cannot place, is Full
+   reflection sink. A transpiler on any other target, or on one the check cannot place, is Broad
    access ("Rewrites code other than the game's ...", policy 12).
    The framework and Harmony semantics the check models by name (reflection lookups and sinks,
    collections and LINQ, name filters, path sources and combiners, interpolated strings,
@@ -399,7 +399,7 @@ decision is then made from that one model, using the rules in
    what is traced, and a same-named type adds tracing.
 8. **Manifest resources.** Every embedded resource is read (never unpacked or loaded) and must
    look like data; see "Couldn't be fully checked" for what counts as an embedded binary. Analyzing an
-   embedded assembly as part of the mod is not done yet: it is Full access.
+   embedded assembly as part of the mod is not done yet: it is Broad access.
 9. **Compiler-generated code.** Collection expressions and `params` spans compile to helpers
    that use `Unsafe`. Those helpers are exempt only when their IL matches the compiler's
    template and each call passes a matching inline-array type and an in-range constant. The
@@ -422,7 +422,7 @@ decision is then made from that one model, using the rules in
    that cannot be read is listed as skipped and is not a game assembly, so calls into it are not
    analyzed (the pipeline does not keep such a profile and scans its results again next run).
 11. **Fail closed.** Undecodable IL, unreadable files, unextractable archives and files whose
-   hash changed since extraction are reported and count as Full access. No blind spot leaves a
+   hash changed since extraction are reported and count as Broad access. No blind spot leaves a
    mod in No code or Limited access. A game or library profile made by an older tool or with
    a different policy is refused.
 
@@ -437,11 +437,11 @@ were analyzed.
 ## Policy
 
 [policy/policy.jsonc](policy/policy.jsonc) holds the capability rules, the label wording, the
-tier names and summaries, the Full-access triggers in their three groups (the `fullAccess`
-section, and `fullAccessCombinations`, each with its group) and the game-specific path sources.
+tier names and summaries, the Broad-access triggers in their three groups (the `broadAccess`
+section, and `broadAccessCombinations`, each with its group) and the game-specific path sources.
 It is embedded in the tool at build time; `--policy FILE` overrides it. The tool validates it on
-load: every capability must be assigned to exactly one of a Full-access group, a label, file-path
-tracing or the informational list, and every finding to exactly one Full-access group. Results are stamped with the tool version, the policy version and the
+load: every capability must be assigned to exactly one of a Broad-access group, a label, file-path
+tracing or the informational list, and every finding to exactly one Broad-access group. Results are stamped with the tool version, the policy version and the
 policy file's SHA-256, so a result can be reproduced.
 
 ## Requirements
@@ -545,7 +545,7 @@ have no stamp, so they are identified by their files' hashes and their result is
 
 ### Results
 
-Each result has the mod's tier, its labels, and its Full-access reasons in their groups. Labels
+Each result has the mod's tier, its labels, and its Broad-access reasons in their groups. Labels
 and reasons carry a stable id next to their text, and every piece of evidence behind them,
 sorted, with the count. File paths are relative to the release's archive, as extracted: a
 component renamed by extraction (below) appears renamed, for example `MyMod/_dm_.git/x.dll`. Text output shows the
@@ -579,7 +579,7 @@ same extraction. Archives are untrusted: entries with absolute paths, `..`, link
 that collide ignoring case are never written, the size limit counts bytes actually written
 (4 GiB per mod by default; the counted bytes, the file count and the nesting depth are what stop
 archive bombs), and any archive that could not be extracted completely is listed as unextracted,
-which the analyzer reports as Full access. A path component named like a version-control, editor
+which the analyzer reports as Broad access. A path component named like a version-control, editor
 or coding-agent folder or file (`.git`, as a folder or a file, `.gitmodules`, `.gitattributes`,
 `.hg`, `.svn`, `.bzr`, `.jj`, `.vscode`, `.idea`, `.cursor`, `.cursorrules`, `.claude`, `CLAUDE.md`,
 `CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`, `.gemini`, `GEMINI.md`, `.mcp.json`;
@@ -590,9 +590,11 @@ would otherwise take these as their repository, hooks, tasks or instructions. Ev
 applies to the renamed name, and one that then collides with another entry (an archive with both
 `.git/x` and `_dm_.git/x`) makes the archive unextracted. The analyzer never looks at folder names,
 so the rename changes only the paths a report shows. `compare-results` prints the counts of the
-three tiers, of labels and of Full-access reasons by group, the mods whose tier changed, and the
-Full-access mods whose reason groups changed (it also reads results from before policy 13, which
-had four tiers);
+three tiers, of labels and of Broad-access reasons by group, the mods whose tier changed, and the
+Broad-access mods whose reason groups changed (it also reads results from before policy 13, which
+had four tiers, and from before policy 36, which called Broad access "Full access", tier id
+`full-access`; `scan` reads stored results from before policy 36 the same way, so the rename alone
+is never reported as a change);
 `rank-unclassified FACTS.json --manifest manifest.json` ranks the framework members the policy
 does not classify, from `analyze --facts`. Run `dotnet out/darkmatter-pipeline.dll help` for
 every option.
@@ -623,7 +625,7 @@ only), so a value a mod reads by reflection from a game member can be typed.
 
 | Path | Purpose |
 |---|---|
-| `policy/policy.jsonc` | capability rules, labels, tiers, Full-access triggers and their groups, path sources |
+| `policy/policy.jsonc` | capability rules, labels, tiers, Broad-access triggers and their groups, path sources |
 | `src/DarkMatter/Analysis/` | single pass over each assembly: IL decoding, capabilities, reflection, calls, fields, path sources |
 | `src/DarkMatter/Evaluation/` | file-path origin tracing, reach propagation, tiers and labels per mod, the game-API map, trusted-library profiles |
 | `src/DarkMatter/Cli/` | command line: options, inputs, text and JSON output |
@@ -756,8 +758,8 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   but with another hash is reported as one. Trusting such files would need a ledger of official
   package hashes, which does not exist yet. This over-reports and never lowers a result.
 - **Dependencies on other mods are not followed.** A call into an assembly that the mod does not
-  ship, and that is not trusted, the game or the framework, makes the mod Full access
-  (couldn't be fully checked), whatever that other mod's own tier is (Limited access or Full
+  ship, and that is not trusted, the game or the framework, makes the mod Broad access
+  (couldn't be fully checked), whatever that other mod's own tier is (Limited access or Broad
   access): the other mod's result says what it can do.
 - **Framework members are classified by name, by hand.** The policy's `safe` list says which
   framework members need no capability; it is not derived from the framework's own code. A
@@ -782,7 +784,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   derived type also has is taken to be the derived type's.
 - **The game-API map covers only the assemblies it was generated from**, and must be
   regenerated for each game update; the game exemptions in the policy were reviewed against one
-  game build and must be reviewed again (the profile prints how many members reach a Full-access
+  game build and must be reviewed again (the profile prints how many members reach a Broad-access
   capability, by group). The same holds for library profiles and exemptions when the allowlist changes.
 - **Opening a folder (policy 11)** is told apart from starting a program only for a folder the same
   method creates with `Directory.CreateDirectory` just before (in the same block, on the same
@@ -806,9 +808,9 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   one of the game method's own. `OpCodes.Calli` anywhere in a mod counts as native code, even when
   it is only compared. Transpiler helpers that look a member up by name themselves
   (`CodeInstruction.Call`, `LoadField`, `StoreField`, `CallClosure`) carry their library profile,
-  which is Full access. Game exemptions that cover a whole namespace (the engine's native and
+  which is Broad access. Game exemptions that cover a whole namespace (the engine's native and
   memory code) still apply to a method a transpiler rewrites. MonoMod IL manipulation (`ILContext`,
-  `ILCursor`) is not modelled: its members carry their library profile, which is Full access.
+  `ILCursor`) is not modelled: its members carry their library profile, which is Broad access.
   Only a transpiler whose target is placed in the game's code stays deep game access (policy 12): the
   mod's own code, a game type known only up to its derived types (which can be the mod's), and a
   `PatchProcessor` given a transpiler (whose original the check does not link to it) count as
@@ -828,7 +830,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   (or `string.Equals`) on its parameter and returns false otherwise, and that is created where it is
   used (a lambda that captures a variable). A lambda without captures is cached by the compiler in a
   static field, which the check does not follow: it reaches every member, as before. (Until policy 23
-  the cached form was also Full access: the member array on the stack at the branch the compiler's
+  the cached form was also Broad access: the member array on the stack at the branch the compiler's
   caching code puts before the LINQ call counted as handed to code the check does not follow. A
   collection every way into a block carries at the same place on the stack is now followed on; two
   different ones meeting there, as after `b ? x.GetMethods() : y.GetMethods()`, are not.) A filter
@@ -860,7 +862,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
 - **`foreach` over a user-defined or game inline array** indexes it with a loop variable, which the
   check cannot bound, so it counts as raw memory access. Collection expressions, `params` spans and
   indexing with a run-time value (a bounds-checked span) are not affected.
-- **Some memory-safe compiler output still counts as raw memory** (it fails toward Full access):
+- **Some memory-safe compiler output still counts as raw memory** (it fails toward Broad access):
   the stores of a `stackalloc` initializer of struct elements (`stackalloc Pair[] { ... }`: the
   buffer is sized with `sizeof` and the offsets built from it, which the offset proof of policy 34
   does not cover), a `stackalloc` of game enum elements (the game's enum sizes are not in the map),
@@ -882,7 +884,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   per call; a helper that takes a `Type` and looks a member up on it reaches the members named
   by every string any call passes, on every type any call passes (all members when a name is not
   traced). A parameter of a public method, or of any method of a type the mod's own reflection
-  reaches, is untraced (Full access), even when every caller in the mod passes a traced member.
+  reaches, is untraced (Broad access), even when every caller in the mod passes a traced member.
   Arrays and lists are followed only in the method that made them (or through a field of this
   assembly typed as an array of types or members); a list kept in a field, a dictionary, a tuple,
   an enumerator kept across `yield return`, a LINQ `Select`, or a lambda's parameter is not
@@ -898,7 +900,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   type, in an array or list, or by a name that is not a constant, a member of a trusted library or of
   another of the mod's assemblies, and a plain `object` parameter (not typed from what its callers
   pass, even when only the mod's own code calls the method) are not typed, and `typeof(X).FullName` is not folded to a constant name. Reflection on such a value is
-  untraced (Full access), which over-reports. The type is not carried through a call that returns
+  untraced (Broad access), which over-reports. The type is not carried through a call that returns
   `object`, a local whose address is taken, or a generic helper.
 - **Member names match ignoring case, always (policy 19).** The check does not read the binding
   flags of a lookup: every name a lookup reaches matches the members of that name in any casing, and
@@ -919,7 +921,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
 - **Non-public framework members are classified by name (policy 19).** The policy's rules name
   framework members without regard to their visibility. A mod can call a non-public framework
   member directly only with `[assembly: IgnoresAccessChecksTo("...")]`, which the runtime honours:
-  naming a framework assembly there counts as a part of .NET the check does not classify (Full
+  naming a framework assembly there counts as a part of .NET the check does not classify (Broad
   access). The name is read as an assembly display name, as the runtime reads it (a version or key
   after a comma, a quoted name: policy 31), and one that does not parse counts the same. Naming the game or a trusted library adds nothing, because the game-API map and library
   profiles cover their non-public members; another assembly is code that was not analyzed where it
@@ -935,7 +937,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   for a name with no assembly part that the mod, the game, the framework and the trusted libraries
   do not have, and only for a lookup (`AccessTools.TypeByName`, `Assembly.GetType`, `Module.GetType`):
   a by-name `CreateInstance` has run a constructor before its result is tested (policy 30). Any other use of the result keeps "Calls code that was not analyzed", including the
-  same test written another way (stored to a local first, `?.`), so it errs toward Full access.
+  same test written another way (stored to a local first, `?.`), so it errs toward Broad access.
 - **Named kernel objects are one label (policy 29).** "Communicates with other programs on your
   computer" covers a named `Mutex`, `Semaphore` or `EventWaitHandle`, which can also squat another
   program's single-instance lock so that it will not start; a name that is a constant `null` (no
@@ -950,7 +952,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   object passed as another delegate's code address is accepted. That needs unverifiable IL that
   coerces an object to a native int, and the call would jump into heap memory. The COM vtable
   types of `System.Runtime.InteropServices.Marshalling` other than the COM wrappers count as raw
-  memory, not native code. Both are Full access; only the group differs.
+  memory, not native code. Both are Broad access; only the group differs.
 - **Overloads share a node** in the call model, which can over-label file access.
 - **Only a fixed list of tool names is renamed on extraction** (`.git`, `.vscode`, `CLAUDE.md`
   and the others under "The tools underneath"). Configuration of other tools (`.envrc`, `_darcs`,
@@ -960,16 +962,16 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   as a repository when git runs inside it: do not run git below `extracted/`, or set
   `safe.bareRepository=explicit`.
 - **7z, RAR, xz, bzip2, zstd, LZ4 and cabinet archives** are recognized but not extracted, and
-  count as Full access; so do zip entries compressed with a method other than stored, deflate or
+  count as Broad access; so do zip entries compressed with a method other than stored, deflate or
   deflate64.
 - **Embedded resources are recognized, not analyzed.** A program, library or archive embedded as
-  a resource is Full access even when it is a harmless managed library (analyzing it in memory
+  a resource is Broad access even when it is a harmless managed library (analyzing it in memory
   and checking it against the allowlist is not done yet). A payload with no recognizable bytes
   (compressed with deflate or brotli under a name no bundler uses, encrypted, hidden in other
   data) is not found; reading the assembly's own resources together with a write into the mod's
-  or the game's folders, or outside the game, is Full access for that reason.
+  or the game's folders, or outside the game, is Broad access for that reason.
 - **Code-folder writes are a pair of capabilities, not a data flow.** A network connection plus a
-  write into the mod's or the game's folders (or a write the check cannot place) is Full access
+  write into the mod's or the game's folders (or a write the check cannot place) is Broad access
   whether or not the downloaded bytes are what is written. A Limited-access mod with "Changes
   files in its own or the game's folders" can still write there what it computes or reads from
   the places its other labels name.
@@ -1048,7 +1050,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
     accepts gets the folder-opening label in place of "Starts other programs".
   - Archive handling in the pipeline was analyzed and reviewed: extraction, renamed tool names,
     per-listing errors, cached profiles and results, and state-folder paths built from listing ids,
-    versions and file names. Archives the check cannot extract are Full access, and a mismatched
+    versions and file names. Archives the check cannot extract are Broad access, and a mismatched
     archive is not scanned.
   - Direct memory access was reviewed twice: a census of every raw-memory finding in the index, and
     an end-to-end review of the detection against every IL and API route (policy 33). It has

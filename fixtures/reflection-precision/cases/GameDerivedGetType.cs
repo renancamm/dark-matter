@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Probe (H7 review, H7b): GetType() of a value declared as a game class can be the mod's own type deriving from
-// it, so a private method of that type found by name is called with any argument. Expected: Full access with
+// it, so a private method of that type found by name is called with any argument. Expected: Broad access with
 // "Uses reflection the check cannot trace" besides the bounded game reflection (before: only the bounded
 // reason; the method's Type argument was traced to its one direct call).
 using System;
