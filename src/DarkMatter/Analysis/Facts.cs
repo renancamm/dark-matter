@@ -61,7 +61,7 @@ internal sealed record FieldReflection(string Node, string Detail, bool Invokes,
 /// Reflection whose target the walker could not trace to one member, but only to a type or any type
 /// derived from it (the run-time type of an object of that declared type), or to any type of one
 /// assembly (Assembly.GetType of a name built at run time). The Evaluator decides by where the type
-/// lives: the game's or the mod's code is bounded (Unverified), anything else is unresolved.
+/// lives: the game's or the mod's code is bounded (deep game access), anything else is unresolved.
 /// </summary>
 /// <param name="Type">"Namespace.Type", or "*" for any type of <paramref name="Assembly"/>.</param>
 /// <param name="Assembly">As in <see cref="ReflectedType.Assembly"/>.</param>
@@ -183,9 +183,9 @@ internal sealed record FolderOpen(string Member, IReadOnlySet<string> Path);
 
 /// <summary>
 /// A member a Harmony transpiler rewrites, as the walker found it: the value given as a manual patch's
-/// original, or returned by the TargetMethod(s) of a patch class with a transpiler. Unverified covers a
-/// rewrite only of the game's code (see the policy's "code-rewrite"); the Evaluator places the target
-/// and counts anything else, or a target it cannot place, as Full access ("rewrite-outside-game").
+/// original, or returned by the TargetMethod(s) of a patch class with a transpiler. Deep game access covers
+/// a rewrite only of the game's code (see the policy's "code-rewrite"); the Evaluator places the target
+/// and counts anything else, or a target it cannot place, as system access ("rewrite-outside-game").
 /// </summary>
 /// <param name="Type">"Namespace.Type" of the member's declaring type ("*" for any type of
 /// <paramref name="Assembly"/>), or null when the target is held in <paramref name="Node"/> or cannot be placed.</param>

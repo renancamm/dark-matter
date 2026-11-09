@@ -7,8 +7,8 @@ namespace DarkMatter.Evaluation;
 internal static class GameApiProfile {
     /// <summary>
     /// For each game method, public or not (mods can be compiled against publicized game
-    /// assemblies), the label capabilities and those that raise the tier (Full access or
-    /// Unverified) it reaches through its callees, including path-traced file access, with one
+    /// assemblies), the label capabilities and those that raise the tier (Full access, any
+    /// group) it reaches through its callees, including path-traced file access, with one
     /// example of each, less what the policy's
     /// <c>game.exempt</c> stops. Findings about the game's own code (reflection the check cannot
     /// trace, unclassified framework members) are not carried: the game's internals are trusted

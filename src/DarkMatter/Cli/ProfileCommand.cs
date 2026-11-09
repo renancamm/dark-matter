@@ -33,7 +33,7 @@ internal static class ProfileCommand {
 
         var profile = GameApiProfile.Build(game, policy);
         JsonOutput.Write(output, new {
-            note = "Game-API capability map: the game's assembly and type names, and its methods with the label, Full-access and Unverified capabilities they reach, with one example each. Names and capability tags only; contains no game code. Derived from the game's assemblies: never commit it.",
+            note = "Game-API capability map: the game's assembly and type names, and its methods with the label and Full-access capabilities they reach, with one example each. Names and capability tags only; contains no game code. Derived from the game's assemblies: never commit it.",
             format = Inputs.ProfileFormat,
             stamp = JsonOutput.Stamp(policy),
             assemblies = game.Select(f => f.Name).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToList(),
@@ -42,9 +42,9 @@ internal static class ProfileCommand {
             evidence = profile,
         });
         int full = profile.Count(kv => kv.Value.Keys.Any(policy.FullAccess.ContainsKey));
-        int unverified = profile.Count(kv => !kv.Value.Keys.Any(policy.FullAccess.ContainsKey) && kv.Value.Keys.Any(policy.Unverified.ContainsKey));
+        var byGroup = string.Join(", ", policy.Groups.Select(g => $"{profile.Count(kv => kv.Value.Keys.Any(g.Reasons.ContainsKey))} {g.Name.ToLowerInvariant()}"));
         Console.Error.WriteLine($"profile: {game.Count} game assemblies ({runtime.Count} runtime assemblies skipped), {profile.Count} methods "
-            + $"({full} reach a Full-access capability, {unverified} more an Unverified one) -> {output}");
+            + $"({full} reach a Full-access capability: {byGroup}) -> {output}");
         return 0;
     }
 
@@ -89,7 +89,7 @@ internal static class ProfileCommand {
             framework);
         var profiles = LibraryProfile.Build(files, policy, boundary, game?.Methods ?? new Dictionary<string, string[]>(), game?.Types);
         JsonOutput.Write(output, new {
-            note = "Trusted-library profiles, keyed by file SHA-256: every member of each file with the capabilities and findings it reaches (Full-access and Unverified ones included), with one example each. Derived from the libraries' assemblies.",
+            note = "Trusted-library profiles, keyed by file SHA-256: every member of each file with the capabilities and findings it reaches (Full-access ones included), with one example each. Derived from the libraries' assemblies.",
             format = Inputs.ProfileFormat,
             stamp = JsonOutput.Stamp(policy),
             libraries = profiles.OrderBy(p => p.Profile.Name, StringComparer.Ordinal).ThenBy(p => p.Sha256, StringComparer.Ordinal)

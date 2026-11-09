@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The rule next to NamedMemberLookup: the same lookup with a filter that does not name the member
-// reaches every member of the type, the clipboard one included. Expected: Known access, "Uses your
+// reaches every member of the type, the clipboard one included. Expected: Limited access, "Uses your
 // clipboard".
 using System.Linq;
 using System.Reflection;

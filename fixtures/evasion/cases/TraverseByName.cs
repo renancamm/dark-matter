@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control: a Harmony Traverse from typeof(X) calling a method by name. Expected: Known access.
+// Control: a Harmony Traverse from typeof(X) calling a method by name. Expected: Limited access.
 using HarmonyLib;
 
 public class TraverseByNameCase {

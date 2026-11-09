@@ -50,7 +50,7 @@ internal sealed record Boundary(IReadOnlySet<string> Trusted, IReadOnlySet<strin
     /// Names of the assemblies in the .NET shared framework the tool runs on
     /// (Microsoft.NETCore.App, the same set the game ships as its runtime). The files are only
     /// listed, never loaded. If the folder cannot be listed the set is empty, so every framework
-    /// call counts as not analyzed (Unverified) instead of being trusted.
+    /// call counts as not analyzed (not fully checked) instead of being trusted.
     /// </summary>
     // Names of the types the shared framework's assemblies define or forward ("Namespace.Outer/Inner"),
     // read from their metadata (never loaded). A file that cannot be read adds none: a type found by

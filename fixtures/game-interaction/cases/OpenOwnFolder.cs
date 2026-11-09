@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control: an "open folder" button. The mod creates a folder next to its assembly and opens it with
-// the shell. Expected: Known access, "Changes files in its own or the game's folders" and "Opens its
+// the shell. Expected: Limited access, "Changes files in its own or the game's folders" and "Opens its
 // own or the game's folders". (Starting a program, shell-open/program, stays Full access.)
 using System.Diagnostics;
 using System.IO;

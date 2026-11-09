@@ -43,8 +43,8 @@ internal static class Program {
               --max-bytes N        size limit per archive and per file in it (default 1 GiB)
 
           darkmatter-pipeline compare-results BEFORE.json [AFTER.json]
-              Tier, label and reason counts (Full access and Unverified) of a `darkmatter analyze
-              --json` file, or of two, and the mods whose tier changed.
+              Tier, label and Full-access reason counts (by group) of a `darkmatter analyze
+              --json` file, or of two, and the mods whose tier or reason groups changed.
 
           darkmatter-pipeline rank-unclassified FACTS.json [--manifest FILE] [--top N] [--by member|type|namespace]
               Rank the framework members the policy does not classify by how many mods use them

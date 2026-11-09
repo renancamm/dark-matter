@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control: a fast getter compiled from an expression tree over a property looked up by a constant
-// name. The compiled code calls only that getter. Expected: Known access.
+// name. The compiled code calls only that getter. Expected: Limited access.
 using System;
 using System.Linq.Expressions;
 

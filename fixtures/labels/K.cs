@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Capabilities with a Known access label of their own.
+// Capabilities with a Limited access label of their own.
 using System;
 using System.Diagnostics;
 using System.Runtime.Versioning;

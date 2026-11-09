@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Reflection targets: a constant type name resolves to its capabilities (Known access);
+// Reflection targets: a constant type name resolves to its capabilities (Limited access);
 // a type name built at run time cannot be resolved (Full access).
 using System;
 

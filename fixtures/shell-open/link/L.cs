@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Opens a fixed web address in the browser. Known access: "Opens websites in your browser".
+// Opens a fixed web address in the browser. Limited access: "Opens websites in your browser".
 using System.Diagnostics;
 
 public class Links {

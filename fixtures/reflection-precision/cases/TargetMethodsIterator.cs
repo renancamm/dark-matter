@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control: Harmony's TargetMethods yields the game methods to patch, each looked up by a constant
-// name. Expected: Known access, "Changes how the game works".
+// name. Expected: Limited access, "Changes how the game works".
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;

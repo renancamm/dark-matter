@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control: a prefix on a game method. Expected: Known access, "Changes how the game works".
+// Control: a prefix on a game method. Expected: Limited access, "Changes how the game works".
 using HarmonyLib;
 
 [HarmonyPatch(typeof(KSA.GameSaves), nameof(KSA.GameSaves.MakeSave))]

@@ -101,7 +101,7 @@ internal sealed class TypeAccess(Policy policy, Boundary boundary, IReadOnlySet<
 
     /// <summary>
     /// Whether a member a Harmony transpiler rewrites is the game's code (see Facts.RewriteTarget), the
-    /// only code a rewrite stays Unverified for. A type found by name counts only when no mod type,
+    /// only code a rewrite stays deep game access for. A type found by name counts only when no mod type,
     /// framework type, policy rule or trusted library has that name; a type known only up to its derived
     /// types counts only as any type of a game assembly ("*"), since a derived type can be the mod's or
     /// another assembly's. The mod's own code does not count: the analysis of its IL (including the

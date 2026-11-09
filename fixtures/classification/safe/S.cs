@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Everyday framework code: collections, LINQ, formatting, maths, tasks, console output. Every
-// member it uses is on the policy's safe list, so it must stay in Known access with no labels.
+// member it uses is on the policy's safe list, so it must stay in Limited access with no labels.
 using System;
 using System.Collections.Generic;
 using System.Linq;

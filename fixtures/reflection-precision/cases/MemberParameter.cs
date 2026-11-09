@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control: a private helper takes the field to read as a parameter; every call passes a field
-// looked up by a constant name. Expected: Known access.
+// looked up by a constant name. Expected: Limited access.
 using System.Reflection;
 
 public class Physics {

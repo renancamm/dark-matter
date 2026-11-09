@@ -21,7 +21,7 @@ internal sealed record LibraryProfile(
 
     /// <summary>
     /// Profiles a set of trusted library files together, so calls between them are followed.
-    /// Unlike the game-API map, findings are kept (Full-access and Unverified ones): a library is
+    /// Unlike the game-API map, findings are kept (Full-access ones): a library is
     /// third-party code trusted to be the build its author published, not to be harmless, so a
     /// mod calling a member gets everything that member can reach, less what the policy's
     /// <c>libraries.exempt</c> stops.
@@ -224,7 +224,7 @@ internal sealed class TrustedLibraries(IReadOnlyDictionary<string, IReadOnlyList
     /// <summary>
     /// The capabilities and findings a call to <paramref name="member"/> of a trusted library
     /// reaches, across every trusted version; or null and why that cannot be known (no profile for
-    /// a version, a forwarded type, a member no profiled version has). Unknown is code that was not analyzed (Unverified).
+    /// a version, a forwarded type, a member no profiled version has). Unknown is code that was not analyzed (not fully checked).
     /// </summary>
     public Reach.Caps? Lookup(string library, string member, out string why) {
         why = "";

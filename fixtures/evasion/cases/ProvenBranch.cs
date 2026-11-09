@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Control: a member looked up by constant name, kept in a local and checked for null before it
 // is invoked; a Type field read by a lookup through the field; a member kept in an
-// auto-property. Expected: Known access.
+// auto-property. Expected: Limited access.
 using System;
 using System.Reflection;
 

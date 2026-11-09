@@ -8,7 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="E.cs" />
-    <!-- A harmless text resource: stays Known access. -->
+    <!-- A harmless text resource: stays Limited access. -->
     <EmbeddedResource Include="payload/readme.txt" LogicalName="Embedded.readme.txt" Condition="'$(Payload)' == 'text'" />
     <!-- A managed library from the SDK, under a data-like name: found by its PE header. -->
     <EmbeddedResource Include="$(MSBuildBinPath)/Microsoft.Build.Framework.dll" LogicalName="Embedded.data.bin" Condition="'$(Payload)' == 'pe'" />

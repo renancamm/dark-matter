@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control: TargetMethod returns a game method looked up by a constant name. Expected: Known access.
+// Control: TargetMethod returns a game method looked up by a constant name. Expected: Limited access.
 using System.Reflection;
 using HarmonyLib;
 

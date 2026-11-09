@@ -1,48 +1,94 @@
 # Dark Matter
 
 Static access analysis for Kitten Space Agency mods. Dark Matter reads a mod's compiled .NET
-assemblies, without loading or running them, and places the mod in one of four access tiers
+assemblies, without loading or running them, and places the mod in one of three access tiers
 with a list of what it can do, in the way an app store lists permissions.
 
 > **Status: prototype.** Results are only as complete as the policy's rules. A missing label
 > means the check found nothing, not that nothing is there. Design rule: **every blind spot
-> fails upward, to Unverified or Full access, never to Known access or Content only.**
+> fails upward, to Full access, never to Limited access or No code.**
 
 ## Tiers
 
-A tier states how much of a mod's access the check can account for. It is not a judgement of
-whether the mod is harmful.
+A tier states what a mod can do, as far as the check can account for it. It is not a judgement
+of whether the mod is harmful, and it says what the mod *can* do, not what it does.
 
-| Tier | Meaning |
-|---|---|
-| **Content only** | Ships no code files: parts, planets, textures, sounds. |
-| **Known access** | Ships code, and everything it can run was looked at. The labels are the complete list. |
-| **Unverified** | Works with the game's internals in ways the check cannot fully follow. Nothing the check saw reaches outside the game, but it cannot rule that out. The labels are what it saw, not a complete list. |
-| **Full access** | Reaches outside the game, or the check could not look at all. The mod can do anything a program on your computer can. Its labels are not a complete list. |
+| Tier | Shown to players | Meaning |
+|---|---|---|
+| **No code** | Only adds content. It can't run programs. | Ships no code files: parts, planets, textures, sounds. |
+| **Limited access** | It can only do what's listed. | Ships code, and everything it can run was looked at. The labels are the complete list. |
+| **Full access** | It can do anything a program on your computer can. | Something in the mod can reach beyond what the check can list, or the check could not look at all. The labels are what it saw, not a complete list. |
 
-A mod is in the highest tier that applies, and the result lists the reasons for each tier above
-Known access, so a Full-access mod also shows what would keep it Unverified.
+A Full-access result says why, in one or more groups. Every group with a reason is listed, so a
+mod whose reasons move from one group to another between releases stands out even though its
+tier stays the same.
 
-**Unverified is not a safety claim.** It means the check's blind spots for this mod are of a
-kind ordinary modding has (direct memory access, parts of .NET or other code the check does not
-follow), not that the mod stays inside the game. Code the check cannot follow can still do
-anything, and a determined author who knows the rules can aim for this tier. Only Known access
-says the labels are complete.
+| Group | Shown to players | For example |
+|---|---|---|
+| **Deep game access** | Works with the game's code and memory directly, in ways the check can't follow all the way. | direct memory access, transpilers on the game's code |
+| **System access** | Uses features that can reach anything on your computer. | native code, starting programs, loading code at run time |
+| **Couldn't be fully checked** | Part of the mod couldn't be inspected. | an unreadable file, a script or installer, an embedded archive |
 
-**Full access** applies when the mod:
+**The groups explain the tier; they are not a scale.** The claim is the tier: Full access. Deep
+game access means the check's blind spots for this mod are of a kind ordinary modding has, not
+that the mod stays inside the game. Code the check cannot follow can still do anything, and a
+determined author who knows the rules can aim for that group alone. Couldn't be fully checked
+means the check does not know what a part does, not that it does anything; it is often a
+packaging problem the author can fix. Only Limited access says the labels are complete.
+
+Many widely used mods are Full access (loaders, scripting bridges, physics mods, mods that use
+native libraries). For those, trust rests on the author rather than on the check.
+
+A reason reached through another member (a framework, game or trusted-library member the mod
+calls, reaches by reflection or patches) is reported in that reason's group.
+
+### Deep game access
+
+The mod:
+
+- reads or writes memory directly: pointer code (including pointer types in the signatures of
+  members it calls, reads and writes through an address that is not a managed reference, and a
+  by-reference argument, local or returned reference that is not one), `Marshal`, `Unsafe`,
+  `NativeMemory`, `MemoryMarshal`, vector loads and stores at an unchecked offset. The game's API
+  is pointer-heavy, so ordinary mods do this. Policy 9 does not yet tell an address the game hands
+  over from one the mod makes up (see "Known gaps")
+- uses reflection the check traces only to the game's or its own code: a member of the run-time
+  type of an object whose declared type is a game or mod type (`vehicle.GetType().GetField(...)`:
+  that type or one derived from it), a type found by a name built at run time in a game or mod
+  assembly (`typeof(KSA.Program).Assembly.GetType(name)`), or a member from a lookup on a game or
+  mod type (`GetMethods()`, ...) after the array or list was passed to code the check does not
+  follow. Ordinary modding reads game internals this way; the check knows which code it is in but
+  not exactly which member, so the labels may miss what that member does
+- rewrites the game's code, and only the game's, with a Harmony transpiler (`CodeInstruction`,
+  `CodeMatch`, `CodeMatcher`, `Transpilers`, an `ILGenerator`'s labels and locals; any other target
+  is system access, see below). Harmony compiles the patched game method
+  from the instructions the transpiler returns, which the check does not read as a whole: what the
+  new instructions name is traced (see System access), `OpCodes.Calli` is native code, but
+  what the game method's own instructions do once rearranged is not followed. Ordinary modding
+  does this to change the game's behaviour inside a method
+- reads or writes XML with `XmlSerializer` for a type: it creates objects of that type and of the
+  types its fields, properties and attributes name, and sets their members, which the check does
+  not follow (the type is chosen in the mod's code, not by the XML). This holds even when the check
+  did not trace the type (a generic `typeof(T)`), which is then not bounded to the game's or the
+  mod's code: see "XmlSerializer is deep game access" under Known gaps
+
+### System access
+
+The mod:
 
 - runs native code: P/Invoke, `calli`, mixed-mode or precompiled (ReadyToRun) assemblies, native binaries, `NativeLibrary`
+- ships a native program or library: a file without .NET metadata, or an ELF or Mach-O image
 - loads or builds code at run time: `Assembly.Load*`, `Reflection.Emit` (`DynamicMethod`,
   `ILGenerator.Emit`, `AssemblyBuilder`), compiled expression trees (unless the tree is built only
   from members the check traced, see below), Roslyn, `MetadataUpdater.ApplyUpdate`, an
   `[XmlSerializerAssembly]` attribute. A Harmony transpiler on the game's code is not code
-  generation (see Unverified)
+  generation (see Deep game access)
 - rewrites code other than the game's with a Harmony transpiler (policy 12): a transpiler whose
   target is a framework member (`string.Concat`), a trusted library's, one of the mod's own, a
   member of code that was not analyzed, a game type known only up to its derived types, or a target
   the check cannot place (an untraced `TargetMethod` result or `Harmony.Patch` original, any
   `PatchProcessor.AddTranspiler`, a reverse patch's original when the mod uses the transpiler
-  helpers). Unverified covers a transpiler only because what it can change is bounded to the game
+  helpers). Deep game access covers a transpiler only because what it can change is bounded to the game
   method it rewrites
 - starts other programs: `Process.Start`, except opening a fixed web address, or a folder the
   same method has just created with `Directory.CreateDirectory` in its own or the game's folders
@@ -70,13 +116,19 @@ says the labels are complete.
   game or trusted-library target; a transpiler on a game member that a policy exemption names gets
   the exempted capability back (the exemption assumes the game's own code runs there), and one on a
   game member that opens a fixed web address or a folder starts programs (policy 12)
-- ships a file named like a .NET, game or trusted-library assembly that is not the trusted copy
-  itself: references to that name load the other assembly, not the file the check read
 - calls a trusted-library or game member that can reach any of the above, unless the policy
   exempts that member for that capability (each exemption is listed with its reason in
   [policy/policy.jsonc](policy/policy.jsonc); for example Harmony's patching API, whose code
   generation and native code are how patching works, and the game's own native bindings)
-- ships a native program or library: a file without .NET metadata, or an ELF or Mach-O image
+- connects to the internet and changes files in its own or the game's folders, where the mod
+  loader finds code (any DLL in a mod folder, `mod.toml`, `*.deps.json`, the game's mod
+  manifest), or in places the check cannot place outside them. The check does not prove the
+  written bytes came from the network; the pair is enough to install code for the next launch
+
+### Couldn't be fully checked
+
+The mod:
+
 - contains code, a file or an archive the check cannot read, or ships a script or installer; an
   archive counts as unreadable when extraction refused any of its entries (absolute paths, `..`,
   links, devices, names Windows does not allow, two names that are one file ignoring case)
@@ -84,53 +136,22 @@ says the labels are complete.
   ELF, Mach-O, zip, gzip, 7z, RAR, xz, zstd, LZ4, bzip2, cabinet, tar), by a PE header anywhere
   in the resource, or by a bundler's name (Costura.Fody's `costura.*.dll.compressed`, `*.dll`);
   a resource linked from a separate file counts too
-- connects to the internet and changes files in its own or the game's folders, where the mod
-  loader finds code (any DLL in a mod folder, `mod.toml`, `*.deps.json`, the game's mod
-  manifest), or in places the check cannot place outside them. The check does not prove the
-  written bytes came from the network; the pair is enough to install code for the next launch
-
-**Unverified** applies when none of the above does, and the mod:
-
-- reads or writes memory directly: pointer code (including pointer types in the signatures of
-  members it calls, reads and writes through an address that is not a managed reference, and a
-  by-reference argument, local or returned reference that is not one), `Marshal`, `Unsafe`,
-  `NativeMemory`, `MemoryMarshal`, vector loads and stores at an unchecked offset. The game's API
-  is pointer-heavy, so ordinary mods do this. Policy 9 does not yet tell an address the game hands
-  over from one the mod makes up (see "Known gaps")
+- reads its own embedded data and writes files where the game loads code from, or to places the
+  check cannot place outside the game's code folders: an embedded binary the check cannot
+  recognize (compressed or encrypted) has to be written out this way
+- ships a file named like a .NET, game or trusted-library assembly that is not the trusted copy
+  itself: references to that name load the other assembly, not the file the check read
 - uses a part of .NET the policy does not classify (every framework member must match a
   capability rule or the policy's `safe` list), directly or by reflection on a framework type
-- uses reflection the check traces only to the game's or its own code: a member of the run-time
-  type of an object whose declared type is a game or mod type (`vehicle.GetType().GetField(...)`:
-  that type or one derived from it), a type found by a name built at run time in a game or mod
-  assembly (`typeof(KSA.Program).Assembly.GetType(name)`), or a member from a lookup on a game or
-  mod type (`GetMethods()`, ...) after the array or list was passed to code the check does not
-  follow. Ordinary modding reads game internals this way; the check knows which code it is in but
-  not exactly which member, so the labels may miss what that member does
-- rewrites the game's code, and only the game's, with a Harmony transpiler (`CodeInstruction`,
-  `CodeMatch`, `CodeMatcher`, `Transpilers`, an `ILGenerator`'s labels and locals; any other target
-  is Full access, see above). Harmony compiles the patched game method
-  from the instructions the transpiler returns, which the check does not read as a whole: what the
-  new instructions name is traced (see the Full-access list), `OpCodes.Calli` is native code, but
-  what the game method's own instructions do once rearranged is not followed. Ordinary modding
-  does this to change the game's behaviour inside a method
-- reads or writes XML with `XmlSerializer` for a type: it creates objects of that type and of the
-  types its fields, properties and attributes name, and sets their members, which the check does
-  not follow (the type is chosen in the mod's code, not by the XML). This holds even when the check
-  did not trace the type (a generic `typeof(T)`), which is then not bounded to the game's or the
-  mod's code: see "XmlSerializer is Unverified" under Known gaps
 - calls code that was not analyzed: an assembly that is not one of the mod's files, a trusted
   library, the game, or the .NET framework (for example another mod it depends on, or a game
   assembly the current game no longer ships), or a trusted library without a profile for every
   trusted version. This includes reflection on a type of such an assembly
   (`Type.GetType("Some.Type, OtherMod")`), or a type found by name that none of them has
-- reaches by reflection, patches, or calls a framework, game or trusted-library member that can
-  reach any of these (and nothing in the Full-access list)
+- lists a file that was not analyzed (for example one whose hash changed after extraction)
 
-Many widely used mods are Full access (loaders, scripting bridges, physics mods). For those,
-trust rests on the author rather than on the check.
-
-**Labels**, shown in every tier (the complete list in Known access, what the check saw in
-Unverified and Full access):
+**Labels**, shown in every tier (the complete list in Limited access, what the check saw in
+Full access):
 
 | Label | What it covers |
 |---|---|
@@ -164,7 +185,7 @@ decision is then made from that one model, using the rules in
    name: one of the mod's own files (analyzed with it), a trusted library, the game (the game
    profile's assembly list, else the policy's `game.assemblies` patterns), or the .NET shared
    framework the tool runs on. A framework member that matches no capability or `safe` rule,
-   and any reference to an assembly that is none of these, means Unverified at least. Members are
+   and any reference to an assembly that is none of these, means Full access (couldn't be fully checked). Members are
    classified by the policy, not derived from the framework's code.
 3. **Reflection.** Constant strings, integers and `typeof` tokens are tracked through the stack
    and locals. A type resolved from a constant (`Type.GetType("System.Net.Http.HttpClient")`)
@@ -199,7 +220,7 @@ decision is then made from that one model, using the rules in
    calls, member access, constructors, assignments, blocks, lambdas) runs only those members and
    is not code generation. A member of the run-time type of an object of a declared game or mod
    type, and a type of a game or mod assembly found by a name built at run time, are bounded:
-   Unverified, not Full access. Tracking resets at every branch target and exception handler,
+   deep game access, not system access. Tracking resets at every branch target and exception handler,
    except that a local's type or member is traced from all its stores (and when they differ, as
    one of them).
 4. **Libraries by hash, not by name.** A file is trusted only if its SHA-256 is on the
@@ -210,7 +231,7 @@ decision is then made from that one model, using the rules in
    themselves (all versions together, keyed by SHA-256) and records, for every member, the
    capabilities and findings it can reach: through its callees, the overrides a virtual call can
    dispatch to, and its type's static constructor. A mod calling a trusted member gets that
-   member's profile, Full-access and Unverified capabilities included, merged over every trusted
+   member's profile, Full-access capabilities included, merged over every trusted
    version (the loader decides which copy is loaded). A call into a library with an unprofiled
    version, or to a member no profiled version has, counts as code that was not analyzed. The policy's
    `libraries.exempt` lists the members whose capability is the library's own job and is
@@ -242,7 +263,7 @@ decision is then made from that one model, using the rules in
    target gets its library profile; a target anywhere else is code that was not analyzed.
    Patches on game members otherwise only add "Changes how the game works", and a patch class
    whose patch methods can only observe its target passes nothing of a game or trusted-library
-   target on. Transpilers on the game's code are Unverified ("Rewrites the game's code ..."), not
+   target on. Transpilers on the game's code are deep game access ("Rewrites the game's code ..."), not
    code generation: `OpCodes` and `Label` values are data, and what an instruction refers to is a
    reflection sink. A transpiler on any other target, or on one the check cannot place, is Full
    access ("Rewrites code other than the game's ...", policy 12).
@@ -253,7 +274,7 @@ decision is then made from that one model, using the rules in
    (for the policy's game path sources) or 0Harmony (policy 12). A type that is only named like one
    (`System.Type` defined in a mod, or in an assembly the check did not analyze) is ordinary code.
 8. **Manifest resources.** Every embedded resource is read (never unpacked or loaded) and must
-   look like data; see the Full-access list for what counts as an embedded binary. Analyzing an
+   look like data; see "Couldn't be fully checked" for what counts as an embedded binary. Analyzing an
    embedded assembly as part of the mod is not done yet: it is Full access.
 9. **Compiler-generated code.** Collection expressions and `params` spans compile to helpers
    that use `Unsafe`. Those helpers are exempt only when their IL matches the compiler's
@@ -267,7 +288,7 @@ decision is then made from that one model, using the rules in
    game ships is skipped), method names, capability tags and one example each.
 11. **Fail closed.** Undecodable IL, unreadable files, unextractable archives and files whose
    hash changed since extraction are reported and count as Full access. No blind spot leaves a
-   mod in Content only or Known access. A game or library profile made by an older tool or with
+   mod in No code or Limited access. A game or library profile made by an older tool or with
    a different policy is refused.
 
 The trusted-library allowlist is built from the content index's release ledger
@@ -280,11 +301,11 @@ it runs only the files that were analyzed.
 ## Policy
 
 [policy/policy.jsonc](policy/policy.jsonc) holds the capability rules, the label wording, the
-Full-access and Unverified triggers (the `fullAccess` and `unverified` sections) and the
-game-specific path sources. It is embedded in the tool at build time; `--policy FILE` overrides
-it. The tool validates it on load: every capability must be assigned to exactly one of a
-Full-access trigger, an Unverified trigger, a label, file-path tracing or the informational
-list, and every finding to exactly one of the two trigger sections. Results are stamped with the tool version, the policy version and the
+tier names and summaries, the Full-access triggers in their three groups (the `fullAccess`
+section, and `fullAccessCombinations`, each with its group) and the game-specific path sources.
+It is embedded in the tool at build time; `--policy FILE` overrides it. The tool validates it on
+load: every capability must be assigned to exactly one of a Full-access group, a label, file-path
+tracing or the informational list, and every finding to exactly one Full-access group. Results are stamped with the tool version, the policy version and the
 policy file's SHA-256, so a result can be reproduced.
 
 ## Requirements
@@ -344,8 +365,9 @@ tar.gz archives, nested ones up to `--max-depth` levels, and writes the manifest
 files into mods. Archives are untrusted: entries with absolute paths, `..`, links, devices or
 names that collide ignoring case are never written, the size limit counts bytes actually
 written, and any archive that could not be extracted completely is listed as unextracted, which
-the analyzer reports as Full access. `compare-results` prints the counts of the four tiers, of
-labels and of Full-access and Unverified reasons, and the mods whose tier changed;
+the analyzer reports as Full access. `compare-results` prints the counts of the three tiers, of
+labels and of Full-access reasons by group, the mods whose tier changed, and the Full-access mods
+whose reason groups changed (it also reads results from before policy 13, which had four tiers);
 `rank-unclassified FACTS.json --manifest manifest.json` ranks the framework members the policy
 does not classify, from `analyze --facts`. Run `dotnet out/darkmatter-pipeline.dll help` for
 every option.
@@ -371,7 +393,7 @@ The tracked policy names game members only (in `game.exempt`), never game code.
 
 | Path | Purpose |
 |---|---|
-| `policy/policy.jsonc` | capability rules, labels, Full-access and Unverified triggers, path sources |
+| `policy/policy.jsonc` | capability rules, labels, tiers, Full-access triggers and their groups, path sources |
 | `src/DarkMatter/Analysis/` | single pass over each assembly: IL decoding, capabilities, reflection, calls, fields, path sources |
 | `src/DarkMatter/Evaluation/` | file-path origin tracing, reach propagation, tiers and labels per mod, the game-API map, trusted-library profiles |
 | `src/DarkMatter/Cli/` | command line: options, inputs, text and JSON output |
@@ -390,10 +412,23 @@ The tracked policy names game members only (in `game.exempt`), never game code.
 python3 scripts/test_fixtures.py
 ```
 
-Builds the analyzer and every fixture into a temporary directory and checks tiers, labels,
-evidence, allowlist handling, the game-API map, fail-closed behaviour, policy validation,
-archive extraction safety (`darkmatter-pipeline extract` on hostile archives) and the result
-tools.
+Builds the analyzer and every fixture and checks tiers, labels, evidence, allowlist handling,
+the game-API map, fail-closed behaviour, policy validation, archive extraction safety
+(`darkmatter-pipeline extract` on hostile archives) and the result tools.
+
+Everything is built in one incremental MSBuild run into each project's own `bin/` and `obj/`, so
+a run after a small change recompiles only what changed (`--rebuild` starts from scratch). The
+checks are grouped and the groups run in parallel. While working on one area, run only its
+groups, and run everything before committing:
+
+```sh
+python3 scripts/test_fixtures.py --list                     # group names
+python3 scripts/test_fixtures.py --only evasion,harmony-patch
+```
+
+A filtered run ends by saying how many groups it skipped. The harness turns off the C# compiler
+server (`UseSharedCompilation=false`). In sandboxes that block its pipe, every compile otherwise
+waits for the connection to time out.
 
 ## Development
 
@@ -418,13 +453,14 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   it; putting an untraced member into it is caught only where the walker sees the array. Bounded
   reflection grants the capabilities of the members it names on the declared type, not those of
   a derived type's member of the same name.
-- **Unverified is coarse (policy 9).** All direct memory access is Unverified, whatever the
-  address: a pointer the mod makes up, or is handed by code the check did not trace, is not yet
-  told apart from one the game hands over, although only the latter is bounded to the game's
-  memory. Every part of .NET the policy does not classify and every call into code that was not
-  analyzed is Unverified too, although that code could reach outside the game. Until these are
-  split, Unverified means "the check cannot follow this", not "this stays inside the game". An
-  author who knows the rules can aim for this tier; see "Unverified is not a safety claim" above.
+- **Deep game access is coarse (policy 9).** All direct memory access is deep game access,
+  whatever the address: a pointer the mod makes up, or is handed by code the check did not trace,
+  is not yet told apart from one the game hands over, although only the latter is bounded to the
+  game's memory. Until this is split, the group means "the check cannot follow this", not "this
+  stays inside the game". An author who knows the rules can aim for this group alone; see "The
+  groups explain the tier" above. (Parts of .NET the policy does not classify and calls into code
+  that was not analyzed were in the same tier until policy 13, and are now couldn't be fully
+  checked.)
 - **Exemptions are reviewed by hand.** The game's native code and direct memory use are exempt
   as a whole (by namespace), because almost every game member reaches them. A game member that
   lets a mod choose the address it reads or writes (a handle passed as `IntPtr`, an unchecked
@@ -440,9 +476,9 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
 - **A call into a trusted library is merged over every trusted version**, and same-named
   library assemblies share one call model, which can over-report.
 - **Dependencies on other mods are not followed.** A call into an assembly that the mod does not
-  ship, and that is not trusted, the game or the framework, makes the mod Unverified, whatever
-  that other mod's own tier is (Known access or Full access): the other mod's result says what
-  it can do.
+  ship, and that is not trusted, the game or the framework, makes the mod Full access
+  (couldn't be fully checked), whatever that other mod's own tier is (Limited access or Full
+  access): the other mod's result says what it can do.
 - **Framework members are classified by name, by hand.** The policy's `safe` list says which
   framework members need no capability; it is not derived from the framework's own code. A
   framework call that reaches a capability through a member the list wrongly calls safe (for
@@ -455,7 +491,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
 - **The game-API map covers only the assemblies it was generated from**, and must be
   regenerated for each game update; the game exemptions in the policy were reviewed against one
   game build and must be reviewed again (the profile prints how many members reach a Full-access
-  or an Unverified capability). The same holds for library profiles and exemptions when the allowlist changes.
+  capability, by group). The same holds for library profiles and exemptions when the allowlist changes.
 - **Opening a folder (policy 11)** is told apart from starting a program only for a folder the same
   method creates with `Directory.CreateDirectory` just before (in the same block, on the same
   argument or local) and then starts through `Process.Start(string)` or a `ProcessStartInfo` with
@@ -463,7 +499,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   ending in a literal name without a dot. Any other folder, and a web address that is not a
   constant, counts as starting a program. A folder replaced by a link between the two calls is
   not detected.
-- **Transpilers on the game's code are Unverified as a whole (policy 11).** The check traces what a transpiler's
+- **Transpilers on the game's code are deep game access as a whole (policy 11).** The check traces what a transpiler's
   instructions name, not the patched method Harmony compiles from them: game instructions moved,
   copied or dropped, and memory or native calls the game method already makes, are not followed.
   An instruction's opcode that is not a constant (taken from another instruction) is accepted as
@@ -473,10 +509,10 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   which is Full access. Game exemptions that cover a whole namespace (the engine's native and
   memory code) still apply to a method a transpiler rewrites. MonoMod IL manipulation (`ILContext`,
   `ILCursor`) is not modelled: its members carry their library profile, which is Full access.
-  Only a transpiler whose target is placed in the game's code stays Unverified (policy 12): the
+  Only a transpiler whose target is placed in the game's code stays deep game access (policy 12): the
   mod's own code, a game type known only up to its derived types (which can be the mod's), and a
   `PatchProcessor` given a transpiler (whose original the check does not link to it) count as
-  outside, which is Full access. A mod that uses the transpiler helpers and also makes a
+  outside, which is system access. A mod that uses the transpiler helpers and also makes a
   `[HarmonyDelegate]` to a member outside the game counts as rewriting it (a reverse patch's
   stand-in can carry a transpiler, and the two are not told apart). Of what the game-API map
   proves on the game's own instructions, only opening a web address or a folder is given back
@@ -489,9 +525,9 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   (or `string.Equals`) on its parameter and returns false otherwise, and that is created where it is
   used (a lambda that captures a variable). A lambda without captures is cached by the compiler in a
   static field, which the check does not follow: it reaches every member, as before.
-- **XmlSerializer is Unverified (policy 11)**, even for a type the check traced: the types it
+- **XmlSerializer is deep game access (policy 11)**, even for a type the check traced: the types it
   fills (from the type's fields, properties and `XmlInclude` attributes) are not enumerated. It is
-  Unverified too when the check did not trace the type at all (a generic `typeof(T)`), although
+  deep game access too when the check did not trace the type at all (a generic `typeof(T)`), although
   that type is then not bounded to the game's or the mod's code. This is a deliberate exception to
   the placement principle: the XML cannot choose the types (unlike `BinaryFormatter`), and what
   `XmlSerializer` runs is the parameterless constructors and public setters of types the mod's own
@@ -535,7 +571,7 @@ dotnet format src/DarkMatter.Pipeline/DarkMatter.Pipeline.csproj --verify-no-cha
   or the game's folders, or outside the game, is Full access for that reason.
 - **Code-folder writes are a pair of capabilities, not a data flow.** A network connection plus a
   write into the mod's or the game's folders (or a write the check cannot place) is Full access
-  whether or not the downloaded bytes are what is written. A Known-access mod with "Changes
+  whether or not the downloaded bytes are what is written. A Limited-access mod with "Changes
   files in its own or the game's folders" can still write there what it computes or reads from
   the places its other labels name.
 - **Harmony patch targets are approximated.** When several attributes on a class or method name a

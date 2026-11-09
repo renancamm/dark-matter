@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Ordinary C# that the compiler lowers to Unsafe and MemoryMarshal calls in generated helpers.
-// None of it is raw memory access: the assembly must stay in Known access.
+// None of it is raw memory access: the assembly must stay in Limited access.
 using System;
 using System.Runtime.CompilerServices;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control: a settings screen lists the mod's own settings by reflection, reading every property of
-// its settings type in a foreach. Each element is a property of that type. Expected: Known access.
+// its settings type in a foreach. Each element is a property of that type. Expected: Limited access.
 using System.Text;
 
 public class Settings {

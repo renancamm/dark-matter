@@ -17,9 +17,9 @@ internal static class Evaluator {
         IReadOnlySet<string>? gameTypes) {
         var files = mod.Files.Select(f => new FileResult(f.Path, f.Facts?.Sha256, f.Facts?.Name, f.Facts?.Classification)).ToList();
         if (mod.Files.Count == 0 && mod.Unextracted.Count == 0 && mod.Scripts.Count == 0)
-            return new(Tier.ContentOnly, policy.Tiers[Tier.ContentOnly.Id()], [], [], [], [], [], files);
+            return Result(policy, Tier.NoCode, [], [], [], [], files);
 
-        var findings = new Dictionary<string, List<string>>();  // fullAccess or unverified key -> evidence
+        var findings = new Dictionary<string, List<string>>();  // fullAccess key -> evidence
         var caps = new Dictionary<string, List<string>>();      // capability -> evidence
         var warnings = new List<string>();
         var trusted = new SortedSet<string>(StringComparer.Ordinal);
@@ -88,7 +88,7 @@ internal static class Evaluator {
         foreach (var m in methods) {
             foreach (var d in m.UnresolvedReflection) Add(findings, "unresolved-reflection", d);
             // Known only up to a type's derived types, or an assembly: bounded when that is the
-            // game's or the mod's own code (Unverified), unresolved otherwise.
+            // game's or the mod's own code (deep game access), unresolved otherwise.
             foreach (var b in m.BoundedReflection)
                 if (access.Bounded(b.Type, b.Assembly)) Add(findings, "bounded-reflection", b.Detail);
                 else Add(findings, "unresolved-reflection", b.Detail + "  (not the game's or the mod's code)");
@@ -117,24 +117,31 @@ internal static class Evaluator {
         foreach (var (cap, ev) in caps)
             if (policy.RaisesTier(cap)) foreach (var e in ev) Add(findings, cap, e);
 
-        // Labels are reported in every tier: in Known access they are the complete list, above it
-        // what the check saw.
+        // Labels are reported in every tier: in Limited access they are the complete list, in Full
+        // access what the check saw.
         var labels = policy.Labels
             .Select(l => new Finding(l.Text, [.. l.Caps.Where(caps.ContainsKey).SelectMany(c => caps[c]).Distinct().Take(MaxEvidence)]))
             .Where(f => f.Evidence.Count > 0).ToList();
-        List<Finding> Reasons(IReadOnlyDictionary<string, string> section) => [.. section
-            .Where(kv => findings.ContainsKey(kv.Key))
-            .Select(kv => new Finding(kv.Value, [.. findings[kv.Key].Distinct().Take(MaxEvidence)]))];
-        var full = Reasons(policy.FullAccess);
-        // Capabilities that are Known access one by one, but together let a mod do what Full
-        // access covers (download code and put it where the loader picks it up).
-        foreach (var c in policy.Combinations.Where(c => c.Caps.All(caps.ContainsKey)))
-            full.Add(new Finding(c.Text, [.. c.Caps.Select(cap => $"{cap}: {caps[cap][0]}")]));
-        // Both lists are kept whatever the tier: a Full-access mod's Unverified reasons are what
-        // would still stand between it and Known access once its Full-access reasons are gone.
-        var unverified = Reasons(policy.Unverified);
-        var tier = full.Count > 0 ? Tier.FullAccess : unverified.Count > 0 ? Tier.Unverified : Tier.KnownAccess;
-        return new(tier, policy.Tiers[tier.Id()], labels, full, unverified, warnings, [.. trusted], files);
+        // Every group with a reason is kept: a mod whose reasons move from one group to another
+        // between releases (deep game access only, then system access too) stays visible.
+        var groups = new List<GroupResult>();
+        foreach (var g in policy.Groups) {
+            List<Finding> reasons = [.. g.Reasons
+                .Where(kv => findings.ContainsKey(kv.Key))
+                .Select(kv => new Finding(kv.Value, [.. findings[kv.Key].Distinct().Take(MaxEvidence)]))];
+            // Capabilities that are Limited access one by one, but together let a mod do what Full
+            // access covers (download code and put it where the loader picks it up).
+            foreach (var c in policy.Combinations.Where(c => c.Group == g.Id && c.Caps.All(caps.ContainsKey)))
+                reasons.Add(new Finding(c.Text, [.. c.Caps.Select(cap => $"{cap}: {caps[cap][0]}")]));
+            if (reasons.Count > 0) groups.Add(new(g.Id, g.Name, g.Summary, reasons));
+        }
+        return Result(policy, groups.Count > 0 ? Tier.FullAccess : Tier.LimitedAccess, labels, groups, warnings, [.. trusted], files);
+    }
+
+    static ModResult Result(Policy policy, Tier tier, IReadOnlyList<Finding> labels, IReadOnlyList<GroupResult> groups,
+        IReadOnlyList<string> warnings, IReadOnlyList<string> trusted, IReadOnlyList<FileResult> files) {
+        var text = policy.Tiers[tier.Id()];
+        return new(tier, text.Name, text.Summary, labels, groups, warnings, trusted, files);
     }
 
     // The mod's own assembly names. A shipped copy of a trusted library is not the mod's own code:
@@ -228,7 +235,7 @@ internal static class Evaluator {
             }
     }
 
-    // A transpiler is Unverified ("code-rewrite") only because what it can change is bounded to the
+    // A transpiler is deep game access ("code-rewrite") only because what it can change is bounded to the
     // game method it rewrites. Rewriting anything else is Full access ("rewrite-outside-game"): framework
     // code (whose members the policy classifies by what they do as published), a trusted library (whose
     // profile, and the exemptions applied to it, assume its published code runs), the mod's own code

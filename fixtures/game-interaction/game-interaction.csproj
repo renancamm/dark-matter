@@ -8,6 +8,13 @@
     <AssemblyName>GameInteraction.$(Case)</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <!-- The per-case properties (and the test harness's per-case output folders) stay with the case,
+       so the referenced stand-ins build once, not once per case. -->
+  <ItemDefinitionGroup>
+    <ProjectReference>
+      <GlobalPropertiesToRemove>Case;OutDir;IntermediateOutputPath</GlobalPropertiesToRemove>
+    </ProjectReference>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <Compile Include="cases/$(Case).cs" />
     <ProjectReference Include="../harmony-patch/stub/harmony-patch-stub.csproj" />

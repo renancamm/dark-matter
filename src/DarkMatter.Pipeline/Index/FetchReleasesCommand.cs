@@ -139,7 +139,7 @@ internal static partial class FetchReleasesCommand {
         var assets = Field(release, "assets", JsonValueKind.Array).EnumerateArray()
             .Select(a => (Name: Field(a, "name", JsonValueKind.String).GetString()!, Url: Field(a, "browser_download_url", JsonValueKind.String).GetString()!))
             .ToList();
-        // No folder: a mod without assets is not "content only", it is not analyzed.
+        // No folder: a mod without assets is not "no code", it is not analyzed.
         if (assets.Count == 0) return $"{listing.Id}: {Text.Printable(tag)} has no assets";
 
         if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);

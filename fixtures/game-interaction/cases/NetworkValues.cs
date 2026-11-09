@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Control: IP addresses and endpoints as values, and the computer's own network interfaces, without
-// connecting anywhere. Expected: Known access, "Reads information about you and your computer" (the
+// connecting anywhere. Expected: Limited access, "Reads information about you and your computer" (the
 // interfaces) and no "Connects to the internet".
 using System.Net;
 using System.Net.NetworkInformation;

@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 namespace DarkMatter;
 
 /// <summary>Access tier of a mod, lowest first.</summary>
-internal enum Tier { ContentOnly, KnownAccess, Unverified, FullAccess }
+internal enum Tier { NoCode, LimitedAccess, FullAccess }
 
 /// <summary>Whether a file operation reads or writes.</summary>
 internal enum FileOpKind { Read, Write }
@@ -16,9 +16,8 @@ internal enum FileOpKind { Read, Write }
 internal static class TierExtensions {
     /// <summary>The tier's identifier in the policy and in JSON output ("full-access").</summary>
     public static string Id(this Tier tier) => tier switch {
-        Tier.ContentOnly => "content-only",
-        Tier.KnownAccess => "known-access",
-        Tier.Unverified => "unverified",
+        Tier.NoCode => "no-code",
+        Tier.LimitedAccess => "limited-access",
         _ => "full-access",
     };
 }
@@ -33,7 +32,7 @@ internal sealed class Policy {
         "shell-open", "shell-open-folder", "file-saves", "file-write-outside", "file-read-outside", "file-write-code",
     ];
 
-    /// <summary>Findings that are not capabilities; each needs a "fullAccess" or an "unverified" entry.</summary>
+    /// <summary>Findings that are not capabilities; each needs an entry in one "fullAccess" group.</summary>
     public static readonly IReadOnlyList<string> Findings = [
         "unresolved-reflection", "bounded-reflection", "com-activation", "decode-failure", "unreadable-file",
         "native-binary", "unextracted-archive", "not-analyzed", "unclassified-reference", "unanalyzed-call",
@@ -48,10 +47,12 @@ internal sealed class Policy {
 
     public required string Version { get; init; }
     public required string Sha256 { get; init; }
-    public required IReadOnlyDictionary<string, string> Tiers { get; init; }
+    public required IReadOnlyDictionary<string, TierText> Tiers { get; init; }
     public required IReadOnlyList<Rule> Rules { get; init; }
+    /// <summary>The Full-access reason groups, in display order.</summary>
+    public required IReadOnlyList<Group> Groups { get; init; }
+    /// <summary>Every Full-access capability or finding, with its reason text (all groups).</summary>
     public required IReadOnlyDictionary<string, string> FullAccess { get; init; }
-    public required IReadOnlyDictionary<string, string> Unverified { get; init; }
     public required IReadOnlyList<Combination> Combinations { get; init; }
     public required IReadOnlyList<Label> Labels { get; init; }
     public required IReadOnlySet<string> Informational { get; init; }
@@ -71,8 +72,18 @@ internal sealed class Policy {
 
     internal sealed record Label(string Text, IReadOnlySet<string> Caps);
 
-    /// <summary>A Full-access finding for a mod that has all of <see cref="Caps"/>.</summary>
-    internal sealed record Combination(string Id, string Text, IReadOnlyList<string> Caps);
+    /// <summary>A tier's name and one-line summary, shown to the user.</summary>
+    internal sealed record TierText(string Name, string Summary);
+
+    /// <summary>A group of Full-access reasons: why a mod is Full access, for the user.</summary>
+    /// <param name="Id">Identifier in the policy and in JSON output ("system-access").</param>
+    /// <param name="Name">Shown to the user ("System access").</param>
+    /// <param name="Summary">One line shown to the user.</param>
+    /// <param name="Reasons">Capability or finding -> reason text.</param>
+    internal sealed record Group(string Id, string Name, string Summary, IReadOnlyDictionary<string, string> Reasons);
+
+    /// <summary>A Full-access finding, in group <see cref="Group"/>, for a mod that has all of <see cref="Caps"/>.</summary>
+    internal sealed record Combination(string Id, string Group, string Text, IReadOnlyList<string> Caps);
 
     internal enum MatchKind { Prefix, Exact, Contains }
 
@@ -175,15 +186,21 @@ internal sealed class Policy {
             foreach (var p in c.Value.EnumerateArray()) rules.Add(Rule.Parse(c.Name, Text(p)));
         foreach (var p in root.GetProperty("safe").EnumerateArray()) rules.Add(Rule.Parse(Safe, Text(p)));
 
+        var groups = root.GetProperty("fullAccess").EnumerateObject()
+            .Select(g => new Group(g.Name, Text(g.Value.GetProperty("name")), Text(g.Value.GetProperty("summary")), Strings(g.Value.GetProperty("reasons")))).ToList();
+        // A key in two groups is reported by Validate.
+        var fullAccess = new Dictionary<string, string>();
+        foreach (var (key, text) in groups.SelectMany(g => g.Reasons)) fullAccess.TryAdd(key, text);
         var policy = new Policy {
             Version = Text(root.GetProperty("version")),
             Sha256 = Convert.ToHexStringLower(SHA256.HashData(bytes)),
-            Tiers = Strings(root.GetProperty("tiers")),
+            Tiers = root.GetProperty("tiers").EnumerateObject()
+                .ToDictionary(t => t.Name, t => new TierText(Text(t.Value.GetProperty("name")), Text(t.Value.GetProperty("summary")))),
             Rules = rules,
-            FullAccess = Strings(root.GetProperty("fullAccess")),
-            Unverified = Strings(root.GetProperty("unverified")),
+            Groups = groups,
+            FullAccess = fullAccess,
             Combinations = [.. root.GetProperty("fullAccessCombinations").EnumerateArray()
-                .Select(c => new Combination(Text(c.GetProperty("id")), Text(c.GetProperty("text")), [.. c.GetProperty("caps").EnumerateArray().Select(Text)]))],
+                .Select(c => new Combination(Text(c.GetProperty("id")), Text(c.GetProperty("group")), Text(c.GetProperty("text")), [.. c.GetProperty("caps").EnumerateArray().Select(Text)]))],
             Labels = [.. root.GetProperty("labels").EnumerateArray().Select(l => new Label(Text(l.GetProperty("text")), Set(l.GetProperty("caps"))))],
             Informational = Set(root.GetProperty("informational")),
             FileKinds = Strings(fa.GetProperty("kinds")).ToDictionary(kv => kv.Key, kv => kv.Value switch {
@@ -222,13 +239,13 @@ internal sealed class Policy {
                 Text(x.GetProperty("reason")))))];
 
     /// <summary>
-    /// Whether a capability or finding raises the tier on its own: Full access or Unverified.
+    /// Whether a capability or finding raises the tier on its own, to Full access (any group).
     /// What a game or library member passes on through overrides and patches is decided by this.
     /// </summary>
-    public bool RaisesTier(string cap) => FullAccess.ContainsKey(cap) || Unverified.ContainsKey(cap);
+    public bool RaisesTier(string cap) => FullAccess.ContainsKey(cap);
 
-    /// <summary>The tier a capability or finding puts a mod in on its own, or null for none.</summary>
-    public Tier? TierOf(string cap) => FullAccess.ContainsKey(cap) ? Tier.FullAccess : Unverified.ContainsKey(cap) ? Tier.Unverified : null;
+    /// <summary>The Full-access group of a capability or finding, or null for none.</summary>
+    public Group? GroupOf(string cap) => Groups.FirstOrDefault(g => g.Reasons.ContainsKey(cap));
 
     /// <summary>Every capability the analyzer can produce.</summary>
     public IEnumerable<string> ProducibleCaps => Rules.Where(r => r.Cap != Safe).Select(r => r.Cap)
@@ -237,36 +254,43 @@ internal sealed class Policy {
     void Validate() {
         var errors = new List<string>();
         var labelled = Labels.SelectMany(l => l.Caps).ToHashSet();
+        int Groups(string key) => this.Groups.Count(g => g.Reasons.ContainsKey(key));
         foreach (var cap in ProducibleCaps) {
-            int homes = (FullAccess.ContainsKey(cap) ? 1 : 0) + (Unverified.ContainsKey(cap) ? 1 : 0) + (labelled.Contains(cap) ? 1 : 0)
+            int homes = Groups(cap) + (labelled.Contains(cap) ? 1 : 0)
                 + (FileKinds.ContainsKey(cap) ? 1 : 0) + (Informational.Contains(cap) ? 1 : 0);
-            if (homes != 1) errors.Add($"capability '{cap}' must appear in exactly one of fullAccess, unverified, labels, fileAccess.kinds, informational (found {homes})");
+            if (homes != 1) errors.Add($"capability '{cap}' must appear in exactly one of fullAccess (one group), labels, fileAccess.kinds, informational (found {homes})");
         }
         var producible = ProducibleCaps.ToHashSet();
-        foreach (var (section, entries) in new[] { ("fullAccess", FullAccess), ("unverified", Unverified) })
-            foreach (var (key, text) in entries) {
-                if (!producible.Contains(key) && !Findings.Contains(key)) errors.Add($"{section} entry '{key}' is neither a capability nor a finding");
-                if (string.IsNullOrWhiteSpace(text)) errors.Add($"{section} entry '{key}' has no text");
+        foreach (var g in this.Groups) {
+            if (string.IsNullOrWhiteSpace(g.Name) || string.IsNullOrWhiteSpace(g.Summary)) errors.Add($"fullAccess group '{g.Id}' needs a name and a summary");
+            if (g.Reasons.Count == 0) errors.Add($"fullAccess group '{g.Id}' has no reasons");
+            foreach (var (key, text) in g.Reasons) {
+                if (!producible.Contains(key) && !Findings.Contains(key)) errors.Add($"fullAccess.{g.Id} entry '{key}' is neither a capability nor a finding");
+                if (string.IsNullOrWhiteSpace(text)) errors.Add($"fullAccess.{g.Id} entry '{key}' has no text");
             }
-        foreach (var f in Findings) {
-            int homes = (FullAccess.ContainsKey(f) ? 1 : 0) + (Unverified.ContainsKey(f) ? 1 : 0);
-            if (homes != 1) errors.Add($"finding '{f}' must appear in exactly one of fullAccess, unverified (found {homes})");
         }
+        foreach (var f in Findings) {
+            int homes = Groups(f);
+            if (homes != 1) errors.Add($"finding '{f}' must appear in exactly one fullAccess group (found {homes})");
+        }
+        foreach (var name in this.Groups.GroupBy(g => g.Name, StringComparer.Ordinal).Where(g => g.Count() > 1))
+            errors.Add($"the fullAccess group name '{name.Key}' is used more than once");
         // Each reason is shown to the user on its own: two that read the same cannot be told apart.
-        foreach (var text in FullAccess.Values.Concat(Unverified.Values).GroupBy(t => t, StringComparer.Ordinal).Where(g => g.Count() > 1))
-            errors.Add($"the reason text '{text.Key}' is used more than once in fullAccess and unverified");
+        foreach (var text in this.Groups.SelectMany(g => g.Reasons.Values).GroupBy(t => t, StringComparer.Ordinal).Where(g => g.Count() > 1))
+            errors.Add($"the reason text '{text.Key}' is used more than once in fullAccess");
         foreach (var cap in labelled.Concat(Informational).Concat(FileKinds.Keys))
             if (!producible.Contains(cap)) errors.Add($"'{cap}' is referenced but no rule produces it");
         foreach (var c in Combinations) {
             if (RaisesTier(c.Id) || Combinations.Count(x => x.Id == c.Id) > 1) errors.Add($"fullAccessCombinations id '{c.Id}' is not unique");
-            if (string.IsNullOrWhiteSpace(c.Text) || FullAccess.Values.Contains(c.Text) || Unverified.Values.Contains(c.Text) || Combinations.Count(x => x.Text == c.Text) > 1)
+            if (string.IsNullOrWhiteSpace(c.Text) || FullAccess.Values.Contains(c.Text) || Combinations.Count(x => x.Text == c.Text) > 1)
                 errors.Add($"fullAccessCombinations '{c.Id}' needs a text of its own");
+            if (!this.Groups.Any(g => g.Id == c.Group)) errors.Add($"fullAccessCombinations '{c.Id}' names group '{c.Group}', which is not a fullAccess group");
             if (c.Caps.Count < 2 || c.Caps.Distinct().Count() != c.Caps.Count) errors.Add($"fullAccessCombinations '{c.Id}' needs at least two different capabilities");
             foreach (var cap in c.Caps) {
                 if (!producible.Contains(cap)) errors.Add($"fullAccessCombinations '{c.Id}' references '{cap}', which no rule produces");
-                // A Full-access or Unverified capability decides the tier on its own; a combination
-                // is made of capabilities that are Known access one by one.
-                else if (TierOf(cap) is { } t) errors.Add($"fullAccessCombinations '{c.Id}' references '{cap}', which is {Tiers.GetValueOrDefault(t.Id(), t.Id())} on its own");
+                // A Full-access capability decides the tier on its own; a combination is made of
+                // capabilities that are Limited access one by one.
+                else if (GroupOf(cap) is { } g) errors.Add($"fullAccessCombinations '{c.Id}' references '{cap}', which is Full access on its own ({g.Name})");
             }
         }
         foreach (var o in CodeOrigins)
@@ -280,13 +304,14 @@ internal sealed class Policy {
             if (x.Pattern.Params != null || x.Pattern.Arity >= 0) errors.Add($"{what} cannot use a parameter list or arity: profiles merge overloads");
             if (x.Caps.Count == 0) errors.Add($"{what} lists no capabilities");
             foreach (var cap in x.Caps)
-                if (!RaisesTier(cap) && !labelled.Contains(cap)) errors.Add($"{what} lists '{cap}', which is not a Full-access or Unverified capability, finding or label capability");
+                if (!RaisesTier(cap) && !labelled.Contains(cap)) errors.Add($"{what} lists '{cap}', which is not a Full-access capability, finding or label capability");
             if (x.Library == null && x.Caps.Any(Findings.Contains)) errors.Add($"{what} lists a finding; game profiles carry capabilities only");
             if (x.As != null && !labelled.Contains(x.As)) errors.Add($"{what} passes on '{x.As}' instead, which is not a label capability");
             if (string.IsNullOrWhiteSpace(x.Reason)) errors.Add($"{what} gives no reason");
         }
         foreach (var t in Enum.GetValues<Tier>())
-            if (!Tiers.ContainsKey(t.Id())) errors.Add($"tiers has no name for '{t.Id()}'");
+            if (!Tiers.TryGetValue(t.Id(), out var tt)) errors.Add($"tiers has no name for '{t.Id()}'");
+            else if (string.IsNullOrWhiteSpace(tt.Name) || string.IsNullOrWhiteSpace(tt.Summary)) errors.Add($"tier '{t.Id()}' needs a name and a summary");
         foreach (var id in Tiers.Keys)
             if (!Enum.GetValues<Tier>().Any(t => t.Id() == id)) errors.Add($"tiers names '{id}', which is not a tier");
         if (errors.Count > 0) throw new InvalidDataException("invalid policy:\n  " + string.Join("\n  ", errors));

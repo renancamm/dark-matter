@@ -4,10 +4,10 @@
 // this version and the SHA-256 of this file.
 //
 // The analyzer validates this file on load: every capability a rule or the analyzer can
-// produce must appear in exactly one of "fullAccess", "unverified", "labels",
+// produce must appear in exactly one of "fullAccess" (in one of its groups), "labels",
 // "fileAccess.kinds" or "informational".
 {
-  "version": "12",
+  "version": "13",
   // v3: hardening phase 1 (late binding, Marshal, more deserializers, archive/XML/FileSystemInfo
   //     file labels, certificate store, services/WMI, temp folder counts as outside).
   // v4: hardening phase 2 (classification inversion): a framework member no rule matches is
@@ -112,13 +112,26 @@
   //     assemblies, and Harmony's only to members of 0Harmony; a type named like one elsewhere is
   //     ordinary code. Harmony's patching API is exempt from "rewrite-outside-game" (it adds the
   //     transpilers it is given; what they rewrite is placed at the mod).
+  // v13: three player-facing tiers. "content-only", "known-access", "unverified" and "full-access"
+  //     become "no-code", "limited-access" and "full-access", each with a name and a one-line
+  //     summary. Unverified is no longer a tier of its own: its reasons are the "deep-game-access"
+  //     group of Full access. The Full-access reasons are split into three groups, reported apart:
+  //     "deep-game-access" (raw memory, bounded reflection, transpilers on the game's code,
+  //     XmlSerializer), "system-access" (native code, code loaded or built at run time, programs,
+  //     unsafe deserializers, late binding, untraced reflection, COM, native binaries, transpilers on
+  //     other code, and the network combinations) and "not-fully-checked" (unreadable code, files
+  //     and archives, files not analyzed, scripts, embedded binaries, name collisions, the resource
+  //     combinations, and, moved from Unverified, unclassified framework members and calls into code
+  //     that was not analyzed: gaps in what was checked, not something the mod does). Detection
+  //     unchanged; the tier of a mod that was Unverified becomes Full access.
 
-  // Tiers, lowest first. A mod is in the highest tier that applies.
+  // Tiers, lowest first. A mod is in the highest tier that applies: Full access when any reason in
+  // "fullAccess" or "fullAccessCombinations" applies, else Limited access when it ships code, else
+  // No code. The name and summary are shown to the user.
   "tiers": {
-    "content-only": "Content only",
-    "known-access": "Known access",
-    "unverified": "Unverified",
-    "full-access": "Full access"
+    "no-code": { "name": "No code", "summary": "Only adds content. It can't run programs." },
+    "limited-access": { "name": "Limited access", "summary": "It can only do what's listed." },
+    "full-access": { "name": "Full access", "summary": "It can do anything a program on your computer can." }
   },
 
   // Capability rules. Each pattern is matched against a referenced member, written
@@ -326,7 +339,7 @@
     ],
     // An XmlSerializer for a type: Deserialize creates objects of that type and of the types its
     // public fields and properties (and its XmlInclude attributes) name, and sets their members;
-    // Serialize reads them. The check does not follow which types those are (see "unverified").
+    // Serialize reads them. The check does not follow which types those are (see "deep-game-access").
     // The other constructors and factories take more types, mappings or a location and stay
     // unclassified.
     "xml-serialization": [
@@ -335,59 +348,83 @@
     ]
   },
 
-  // Full access: any of these capabilities or findings. The text is shown to the user. They reach
-  // outside the game openly, or the check could not look at all, or they are shaped like hiding
-  // (names built at run time, code generated or loaded at run time).
+  // Full access: any of these capabilities or findings, in three groups. A mod is Full access
+  // when any reason in any group applies; the groups say why, for the player. Every group is
+  // listed whatever the others hold. The name and summary of a group and the text of each reason
+  // are shown to the user. A reason states what the check saw in the mod's files, never what the
+  // mod intends.
   "fullAccess": {
-    "native-code": "Runs native code",
-    "dynamic-load": "Loads code at run time",
-    "code-generation": "Builds code at run time",
-    "process-start": "Starts other programs",
-    "serialization-unsafe": "Uses a deserializer that can create any type",
-    "late-binding": "Calls members by name at run time",
-    "unresolved-reflection": "Uses reflection the check cannot trace",
-    "com-activation": "Starts a COM component",
-    "decode-failure": "Contains code the check cannot read",
-    "unreadable-file": "Contains a file the check cannot read",
-    "native-binary": "Ships a native program or library",
-    "unextracted-archive": "Contains an archive the check cannot open",
-    "not-analyzed": "Lists a file that was not analyzed",
-    "ships-script": "Ships a script or installer",
-    "embedded-binary": "Contains an embedded program, library or archive",
-    "name-collision": "Ships a file named like a part of .NET, the game or a trusted library",
-    // A Harmony transpiler on anything but the game's code (see the v12 changelog and "code-rewrite").
-    "rewrite-outside-game": "Rewrites code other than the game's with a Harmony transpiler"
-  },
-
-  // Unverified: any of these capabilities or findings, when no Full-access one applies. The text is
-  // shown to the user. Blind spots bounded to the game's or the mod's own code and memory, of the
-  // kind ordinary modding has: nothing seen reaches outside the game, but the check cannot rule it
-  // out, and the labels are what it saw, not a complete list. Not a safety claim: an author who
-  // knows the rules can aim for this tier. A blind spot moves here only with a reason recorded in
-  // the changelog above; everything else stays in "fullAccess".
-  "unverified": {
-    "raw-memory": "Reads or writes memory directly",
-    "unclassified-reference": "Uses a part of .NET the check does not classify",
-    "unanalyzed-call": "Calls code that was not analyzed",
-    // Reflection the check traces only to a game or mod type and the types derived from it, or to
-    // any type of a game or mod assembly (see the v10 changelog). Names built at run time on other
-    // types, types from framework enumeration or from an object of an unknown type stay in
-    // "fullAccess" as "unresolved-reflection".
-    "bounded-reflection": "Uses reflection on the game's or its own code that the check cannot fully follow",
-    // A Harmony transpiler: the game method Harmony compiles from the instructions it returns is not
-    // one the check has read. What those instructions name is traced (an untraced operand is
-    // "unresolved-reflection", OpCodes.Calli native code), but not what the game's own instructions do
-    // once rearranged (see the v11 changelog). Bounded to the game's code only: a transpiler on any
-    // other target is "rewrite-outside-game" (Full access, v12).
-    "code-rewrite": "Rewrites the game's code with a Harmony transpiler, which the check cannot follow instruction by instruction",
-    // XmlSerializer runs the parameterless constructors and the setters of the types it fills (and
-    // generates the code that does it, which is the framework's own); which types those are is not
-    // followed. Its type is chosen in the mod's code, not by the XML it reads.
-    "xml-serialization": "Reads or writes XML into objects whose types the check does not follow"
+    // Blind spots bounded to the game's or the mod's own code and memory, of the kind ordinary
+    // modding has (policy 9: "unverified"). Nothing seen reaches outside the game, but the check
+    // cannot rule it out, and the labels are what it saw, not a complete list. Not a safety claim:
+    // an author who knows the rules can aim for this group alone. A blind spot moves here only with
+    // a reason recorded in the changelog above.
+    "deep-game-access": {
+      "name": "Deep game access",
+      "summary": "Works with the game's code and memory directly, in ways the check can't follow all the way.",
+      "reasons": {
+        "raw-memory": "Reads or writes memory directly",
+        // Reflection the check traces only to a game or mod type and the types derived from it, or
+        // to any type of a game or mod assembly (see the v10 changelog). Names built at run time on
+        // other types, types from framework enumeration or from an object of an unknown type are
+        // "unresolved-reflection" (system access).
+        "bounded-reflection": "Uses reflection on the game's or its own code that the check cannot fully follow",
+        // A Harmony transpiler: the game method Harmony compiles from the instructions it returns is
+        // not one the check has read. What those instructions name is traced (an untraced operand is
+        // "unresolved-reflection", OpCodes.Calli native code), but not what the game's own
+        // instructions do once rearranged (see the v11 changelog). Bounded to the game's code only: a
+        // transpiler on any other target is "rewrite-outside-game" (system access, v12).
+        "code-rewrite": "Rewrites the game's code with a Harmony transpiler, which the check cannot follow instruction by instruction",
+        // XmlSerializer runs the parameterless constructors and the setters of the types it fills
+        // (and generates the code that does it, which is the framework's own); which types those are
+        // is not followed. Its type is chosen in the mod's code, not by the XML it reads.
+        "xml-serialization": "Reads or writes XML into objects whose types the check does not follow"
+      }
+    },
+    // Code the check read that uses features that can reach anything on the computer: they reach
+    // outside the game openly, or are shaped like hiding (names built at run time, code generated or
+    // loaded at run time).
+    "system-access": {
+      "name": "System access",
+      "summary": "Uses features that can reach anything on your computer.",
+      "reasons": {
+        "native-code": "Runs native code",
+        "dynamic-load": "Loads code at run time",
+        "code-generation": "Builds code at run time",
+        "process-start": "Starts other programs",
+        "serialization-unsafe": "Uses a deserializer that can create any type",
+        "late-binding": "Calls members by name at run time",
+        "unresolved-reflection": "Uses reflection the check cannot trace",
+        "com-activation": "Starts a COM component",
+        "native-binary": "Ships a native program or library",
+        // A Harmony transpiler on anything but the game's code (see the v12 changelog and "code-rewrite").
+        "rewrite-outside-game": "Rewrites code other than the game's with a Harmony transpiler"
+      }
+    },
+    // Parts of the mod the check could not inspect, or could not place: what they do is not known,
+    // so nothing here says the mod does anything. Often a packaging problem the author can fix.
+    "not-fully-checked": {
+      "name": "Couldn't be fully checked",
+      "summary": "Part of the mod couldn't be inspected.",
+      "reasons": {
+        "decode-failure": "Contains code the check cannot read",
+        "unreadable-file": "Contains a file the check cannot read",
+        "unextracted-archive": "Contains an archive the check cannot open",
+        "not-analyzed": "Lists a file that was not analyzed",
+        "ships-script": "Ships a script or installer",
+        "embedded-binary": "Contains an embedded program, library or archive",
+        // The game loads a different file from the one the check read under that name.
+        "name-collision": "Ships a file named like a part of .NET, the game or a trusted library",
+        // A gap in the policy, not something the mod does (policy 9 placed it with raw memory).
+        "unclassified-reference": "Uses a part of .NET the check does not classify",
+        "unanalyzed-call": "Calls code that was not analyzed"
+      }
+    }
   },
 
   // Full access when a mod has every listed capability together (label or informational
-  // capabilities: a Full-access or Unverified one decides the tier alone). The
+  // capabilities: a Full-access one decides the tier alone), with the "fullAccess" group it is
+  // reported in. The
   // KSA mod loader loads any DLL in a mod's folder that something references, and reads
   // mod.toml, *.deps.json and the game's mod manifest from the mod and game folders (see
   // docs/loader-spec.md). A mod that connects to the internet and writes there can install code
@@ -399,13 +436,13 @@
   // (compressed with deflate or brotli, or encrypted) must be read from the resource and written
   // out, so reading its own resources and writing such files is Full access too.
   "fullAccessCombinations": [
-    { "id": "network-code-write", "text": "Connects to the internet and changes files where the game loads code from", "caps": ["network", "file-write-code"] },
-    { "id": "network-other-write", "text": "Connects to the internet and changes files the check cannot place outside the game's code folders", "caps": ["network", "file-write-outside"] },
-    { "id": "resource-code-write", "text": "Writes out its own embedded data where the game loads code from", "caps": ["resource-read", "file-write-code"] },
-    { "id": "resource-other-write", "text": "Writes out its own embedded data to places the check cannot place outside the game's code folders", "caps": ["resource-read", "file-write-outside"] }
+    { "id": "network-code-write", "group": "system-access", "text": "Connects to the internet and changes files where the game loads code from", "caps": ["network", "file-write-code"] },
+    { "id": "network-other-write", "group": "system-access", "text": "Connects to the internet and changes files the check cannot place outside the game's code folders", "caps": ["network", "file-write-outside"] },
+    { "id": "resource-code-write", "group": "not-fully-checked", "text": "Writes out its own embedded data where the game loads code from", "caps": ["resource-read", "file-write-code"] },
+    { "id": "resource-other-write", "group": "not-fully-checked", "text": "Writes out its own embedded data to places the check cannot place outside the game's code folders", "caps": ["resource-read", "file-write-outside"] }
   ],
 
-  // Known access labels, in display order. A label applies when the mod has any listed capability.
+  // Labels, in display order. A label applies when the mod has any listed capability.
   "labels": [
     { "text": "Changes how the game works", "caps": ["code-patching"] },
     { "text": "Connects to the internet", "caps": ["network"] },
@@ -427,13 +464,13 @@
   // safe namespace and vice versa.
   //
   // A framework member (an assembly of the .NET shared framework) that no rule here or in
-  // "capabilities" matches is "unclassified-reference": Unverified. So a prefix belongs here
+  // "capabilities" matches is "unclassified-reference": Full access (not fully checked). So a prefix belongs here
   // only when everything under it is capability-free: no files, network, processes, registry,
   // native code, raw memory, environment, code loading or reflection. Pointer types in a
   // member's signature are checked separately and stay raw memory. Members of other assemblies
   // (the mod, the game, trusted libraries) are not checked against this list.
   //
-  // Deliberately left unclassified (Unverified until someone decides): System.AppContext::SetSwitch
+  // Deliberately left unclassified (not fully checked until someone decides): System.AppContext::SetSwitch
   // and SetData (switch runtime safety features; fixtures/classification/unclassified relies on
   // it), Queryable (calls built from MethodInfos; System.Linq.Expressions is classified since v10), System.Runtime.Intrinsics
   // (LoadUnsafe/StoreUnsafe read and write through a reference), GCHandle (FromIntPtr forges a
@@ -638,11 +675,11 @@
   },
 
   // Exemptions (in "game" and "libraries" below). A game or trusted-library member passes every
-  // capability it reaches to the mods that call it, Full-access and Unverified ones included (libraries also
+  // capability it reaches to the mods that call it, Full-access ones included (libraries also
   // pass findings such as untraced reflection). An exemption stops the listed capabilities at
   // the matching members while the game or library profile is built: they are dropped where
   // they are found in such a member and do not flow from it to its callers or to a mod. Use it
-  // for a Full-access or Unverified capability that is the member's intended job and is accounted for another
+  // for a Full-access capability that is the member's intended job and is accounted for another
   // way, or for a capability the check over-approximates there (a label capability only then).
   // "as" passes a label capability instead. "member" uses the capability pattern syntax without
   // a parameter list or "#N" (profiles merge overloads); "members" lists several patterns that share
