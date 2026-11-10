@@ -8,6 +8,13 @@ namespace DarkMatter.Evaluation;
 /// <summary>What a member referenced in a game assembly runs (see <see cref="Boundary.GameTarget"/>).</summary>
 internal enum GameRef { Defined, Inherited, Framework, Missing }
 
+/// <summary>
+/// Another build of the game than the one the mod is checked against: its name (for evidence), what it
+/// defines (a <see cref="Boundary"/> made from its game profile) and its game-API map. A mod built for
+/// another game version references members the current build lacks; they are looked up here.
+/// </summary>
+internal sealed record OtherGame(string Name, Boundary Boundary, IReadOnlyDictionary<string, string[]> Api);
+
 /// <summary>Where the code of a referenced assembly comes from.</summary>
 internal enum AssemblyKind {
     /// <summary>One of the mod's own files: analyzed with the mod.</summary>

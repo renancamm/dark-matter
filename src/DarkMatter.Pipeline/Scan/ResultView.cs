@@ -9,6 +9,13 @@ internal sealed record FindingView(string Id, string Text, int Count, IReadOnlyL
 /// <summary>A Broad-access group of a result, with its reasons.</summary>
 internal sealed record GroupView(string Id, string Name, string Summary, IReadOnlyList<FindingView> Reasons);
 
+/// <summary>
+/// A required dependency noted in a result (see ScanCommand's Dependencies): the listing, the release that answered,
+/// the tier of its own code (null when it has no result), and the dependency it comes through when it is not
+/// required directly.
+/// </summary>
+internal sealed record DependencyView(string Id, string? Version, string? Tier, string TierName, string? Through, bool Scanned, string? Reason);
+
 /// <summary>A code file of a result.</summary>
 internal sealed record FileView(string Path, string? Sha256, string? Name, string? Classification);
 
@@ -28,6 +35,19 @@ internal sealed record ResultView(
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Trusted,
     IReadOnlyList<FileView> Files) {
+    /// <summary>The mod's required dependencies, and theirs: a note beside the result, not part of its tier.</summary>
+    public IReadOnlyList<DependencyView> Dependencies { get; init; } = [];
+
+    /// <summary>How many Broad-access reasons the mod's own code has: what stands between it and Limited access.</summary>
+    public int ReasonCount => Groups.Sum(g => g.Reasons.Count);
+
+    /// <summary>What goes beside the tier: for Broad access, the number of reasons; null when there is nothing to add.</summary>
+    public string? TierNote => Tier == "broad-access" && ReasonCount > 0 ? $"{ReasonCount} reason{(ReasonCount == 1 ? "" : "s")}" : null;
+
+    /// <summary>The dependencies as one line: "requires X 1.0 (Broad access), Y (not scanned)"; null without any.</summary>
+    public string? Requires => Dependencies.Count == 0 ? null : "requires " + string.Join(", ", Dependencies.Select(d =>
+        $"{d.Id}{(d.Version != null ? " " + d.Version : "")} ({d.TierName}{(d.Through != null ? ", through " + d.Through : "")})"));
+
     static readonly Dictionary<string, string> OldTiers = new(StringComparer.Ordinal) {
         ["content-only"] = "no-code",
         ["known-access"] = "limited-access",
@@ -58,7 +78,11 @@ internal sealed record ResultView(
             groups,
             [.. Arr(o, "warnings").Select(x => x?.ToString() ?? "")],
             [.. Arr(o, "trusted").Select(x => x?.ToString() ?? "")],
-            [.. Arr(o, "files").OfType<JsonObject>().Select(f => new FileView(Str(f, "path") ?? "", Str(f, "sha256"), Str(f, "name"), Str(f, "classification")))]);
+            [.. Arr(o, "files").OfType<JsonObject>().Select(f => new FileView(Str(f, "path") ?? "", Str(f, "sha256"), Str(f, "name"), Str(f, "classification")))]) {
+            Dependencies = [.. Arr(o, "dependencies").OfType<JsonObject>().Select(d => new DependencyView(
+                Str(d, "id") ?? "?", Str(d, "version"), Str(d, "tier"), Str(d, "tierName") ?? Str(d, "tier") ?? "Not scanned",
+                Str(d, "through"), Str(d, "status") != "not scanned", Str(d, "reason")))],
+        };
     }
 
     static FindingView Finding(JsonObject f) {

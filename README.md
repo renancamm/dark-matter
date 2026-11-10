@@ -152,8 +152,11 @@ reason. All commands and options are in [docs/usage.md](docs/usage.md).
 
 ## Limits
 
-- Each mod is analyzed against **one game build**, and **dependencies on other mods are not
-  followed**: a call into another mod counts as code that was not analyzed.
+- Each mod is analyzed against **one game build**. A scan given other builds looks up the game
+  members that build lacks in them ([docs/usage.md](docs/usage.md#several-game-builds)).
+- **A mod's tier covers its own code.** The mods it requires are noted with their own tier
+  ([docs/usage.md](docs/usage.md#dependencies)). **Calls into another mod are not followed**: such a call
+  counts as code that was not analyzed.
 - **Embedded resources are recognized, not analyzed.** A mod that embeds a program or library is
   Broad access.
 - **Labels are independent.** A mod that connects to the internet and reads files outside the game

@@ -160,6 +160,16 @@ namespace KSA {
         public void Update() { }
     }
 
+    // A game method whose parameters and result a mod's patch method takes as object (R10, policy 43): Attach's
+    // are game types (and a number); Swap has two overloads that disagree on what "item" is; Store has a parameter
+    // named like the storage Harmony gives a patch.
+    public class Dock {
+        public Craft Attach(Craft craft, Terminal console, int slot) => craft;
+        public void Swap(Craft item) { }
+        public void Swap(Terminal item) { }
+        public void Store(Craft __state) { }
+    }
+
     public class Rover : Craft {
         public void Launch(string file) => Process.Start(file);
     }
@@ -177,4 +187,23 @@ namespace KSA {
 
     public class HiddenBase { public Craft Slot = new(); }
     public class Hiding : HiddenBase { public new Terminal Slot = new(); }
+
+    // A binding that hands out pointers into its own memory (policy 39), as the game's ImGui binding does: a
+    // mod that only passes them back, keeps them in locals and reads the pointed-to type's fields is not raw memory.
+    public struct Vec2 { public float X, Y; }
+    public unsafe struct Viewport { public int Id; public Vec2 Pos; public Vec2 Size; }
+    public struct Panel { public int Width; }
+    public unsafe struct ViewportPtr {
+        public Viewport* Native;
+        public static implicit operator ViewportPtr(Viewport* native) => new() { Native = native };
+        public static implicit operator Viewport*(ViewportPtr wrapped) => wrapped.Native;
+    }
+    public static unsafe class Ui {
+        static Viewport main;
+        public static Viewport* GetMainViewport() { fixed (Viewport* p = &main) return p; }
+        public static void Use(Viewport* viewport) { }
+        public static void SetNextPos(in Vec2 pos) { }
+        public static void* Raw() => null;
+        public static void UseRaw(void* raw) { }
+    }
 }

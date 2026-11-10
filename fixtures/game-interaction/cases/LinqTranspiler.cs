@@ -4,6 +4,7 @@
 // method is the browser opener whose exemption assumes the game's own check runs. Expected: Broad
 // access, deep game access ("Rewrites the game's code ..."), and "Starts other programs" given back
 // on the opener (G1a review A1).
+// Policy 38: a transpiler on the game's code is the label "Rewrites parts of the game's code", not a Broad-access reason.
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;

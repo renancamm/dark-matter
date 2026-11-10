@@ -26,7 +26,12 @@ internal static class Program {
               Scan one listing's newest release, or the given version.
           darkmatter-pipeline scan mod PATH... --game DIR [options]
               Scan local files: a folder, a zip, or DLLs (an unreleased build). Not stored.
-              --game DIR           the game folder; its DLLs make the game profile (required)
+              --game DIR           the game folder; its DLLs make the game profile (required,
+                                   unless --games is given)
+              --games DIR          a folder of game builds (each subfolder with DLLs is one). Mods
+                                   are checked against --game, or without it the newest build by
+                                   the numbers in the folder names. A game member that build lacks
+                                   is looked up in the others (a mod built for another version)
               --state DIR          where downloads, profiles and results are kept
                                    (default ./darkmatter-state)
               --snapshot FILE|URL  the index snapshot (default the published one; a downloaded

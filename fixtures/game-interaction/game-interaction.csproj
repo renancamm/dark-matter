@@ -7,6 +7,7 @@
     <Case Condition="'$(Case)' == ''">TranspilerOperand</Case>
     <AssemblyName>GameInteraction.$(Case)</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <!-- The per-case properties (and the test harness's per-case output folders) stay with the case,
        so the referenced stand-ins build once, not once per case. -->

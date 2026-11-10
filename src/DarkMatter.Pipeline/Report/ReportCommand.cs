@@ -71,7 +71,12 @@ internal static class ReportCommand {
 
     public static string Render(JsonObject run, string title) {
         var entries = (run["releases"] as JsonArray ?? []).OfType<JsonObject>().ToList();
-        var withResult = entries.Where(e => e["result"] is JsonObject).Select(e => (Entry: e, View: ResultView.From(e["result"]))).ToList();
+        // Each entry with a result keeps one number for its card, whichever table links to it.
+        var withResult = entries.Where(e => e["result"] is JsonObject).Select((e, n) => (Entry: e, View: ResultView.From(e["result"]), Card: n)).ToList();
+        // A mod loader loads other mods' code into the game: Broad access by what it is for. It is listed apart from
+        // the mods, so that the counts say what the mods do. Its result and its card are the same as any other's.
+        var loaders = withResult.Where(x => Str(x.Entry, "type") == "mod-loader").ToList();
+        var mods = withResult.Except(loaders).ToList();
         var b = new StringBuilder();
         b.Append("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
         b.Append(CultureInfo.InvariantCulture, $"<meta http-equiv=\"Content-Security-Policy\" content=\"{Csp}\">\n");
@@ -83,15 +88,16 @@ internal static class ReportCommand {
         // Counts.
         b.Append("<section><h2>Summary</h2>\n<div class=\"tiles\">");
         foreach (var (tier, name) in new[] { ("no-code", "No code"), ("limited-access", "Limited access"), ("broad-access", "Broad access") })
-            b.Append(CultureInfo.InvariantCulture, $"<div class=\"tile {TierClass(tier)}\"><span class=\"n\">{withResult.Count(x => x.View.Tier == tier)}</span><span>{H(name)}</span></div>");
+            b.Append(CultureInfo.InvariantCulture, $"<div class=\"tile {TierClass(tier)}\"><span class=\"n\">{mods.Count(x => x.View.Tier == tier)}</span><span>{H(name)}</span></div>");
         b.Append("</div>\n");
         var skipped = entries.Count(e => Str(e, "status") == "skipped");
         var failed = entries.Count(e => Str(e, "status") == "failed");
-        b.Append(CultureInfo.InvariantCulture, $"<p>{withResult.Count} mods with a result");
+        b.Append(CultureInfo.InvariantCulture, $"<p>{mods.Count} mods with a result");
+        if (loaders.Count > 0) b.Append(CultureInfo.InvariantCulture, $", and {loaders.Count} mod loader{(loaders.Count == 1 ? "" : "s")} listed apart");
         if (skipped > 0) b.Append(CultureInfo.InvariantCulture, $", {skipped} skipped");
         if (failed > 0) b.Append(CultureInfo.InvariantCulture, $", {failed} not scanned because their archive could not be fetched or verified");
         b.Append(".</p>\n");
-        var groupCounts = withResult.SelectMany(x => x.View.Groups.Select(g => g.Name)).GroupBy(n => n).OrderByDescending(g => g.Count()).ToList();
+        var groupCounts = mods.SelectMany(x => x.View.Groups.Select(g => g.Name)).GroupBy(n => n).OrderByDescending(g => g.Count()).ToList();
         if (groupCounts.Count > 0) {
             b.Append("<p>Broad-access mods by reason group (a mod counts in every group it has a reason in): ");
             b.Append(string.Join(", ", groupCounts.Select(g => $"{H(g.Key)} {g.Count()}")));
@@ -125,20 +131,29 @@ internal static class ReportCommand {
             b.Append("</ul></section>\n");
         }
 
+        if (loaders.Count > 0) {
+            b.Append("<section><h2>Mod loaders</h2>\n<p>A mod loader loads the code of other mods into the game, so it is Broad access by what it is for. "
+                + "Its files are also what the check trusts by hash when a mod ships a copy of them.</p>\n"
+                + "<table class=\"index\"><thead><tr><th>Loader</th><th>Version</th><th>Tier</th></tr></thead><tbody>\n");
+            foreach (var (e, v, card) in loaders)
+                b.Append(CultureInfo.InvariantCulture, $"<tr><td><a href=\"#m{card}\">{H(Str(e, "name") ?? Str(e, "id"))}</a></td><td>{H(Str(e["release"] as JsonObject, "version"))}</td>"
+                    + $"<td><span class=\"badge {TierClass(v.Tier)}\">{H(v.TierName)}</span></td></tr>\n");
+            b.Append("</tbody></table></section>\n");
+        }
+
         // Index of mods.
-        if (withResult.Count > 0) {
-            b.Append("<section><h2>Mods</h2>\n<table class=\"index\"><thead><tr><th>Mod</th><th>Version</th><th>Tier</th><th>Why</th></tr></thead><tbody>\n");
-            int i = 0;
-            foreach (var (e, v) in withResult) {
+        if (mods.Count > 0) {
+            b.Append("<section><h2>Mods</h2>\n<table class=\"index\"><thead><tr><th>Mod</th><th>Version</th><th>Tier</th><th>Reasons</th><th>Why</th></tr></thead><tbody>\n");
+            foreach (var (e, v, card) in mods) {
                 var rel = e["release"] as JsonObject;
-                b.Append(CultureInfo.InvariantCulture, $"<tr><td><a href=\"#m{i++}\">{H(Str(e, "name") ?? Str(e, "id"))}</a></td><td>{H(Str(rel, "version"))}</td>"
-                    + $"<td><span class=\"badge {TierClass(v.Tier)}\">{H(v.TierName)}</span></td><td>{H(string.Join(" · ", v.Groups.Select(g => g.Name)))}</td></tr>\n");
+                b.Append(CultureInfo.InvariantCulture, $"<tr><td><a href=\"#m{card}\">{H(Str(e, "name") ?? Str(e, "id"))}</a></td><td>{H(Str(rel, "version"))}</td>"
+                    + $"<td><span class=\"badge {TierClass(v.Tier)}\">{H(v.TierName)}</span></td><td>{H(v.TierNote)}</td>"
+                    + $"<td>{H(string.Join(" · ", v.Groups.Select(g => g.Name).Concat(v.Requires is { } requires ? [requires] : [])))}</td></tr>\n");
             }
             b.Append("</tbody></table></section>\n");
         }
 
-        int n = 0;
-        foreach (var (e, v) in withResult) Card(b, e, v, n++);
+        foreach (var (e, v, card) in withResult) Card(b, e, v, card);
 
         b.Append("<footer>\n");
         b.Append(Footer(run));
@@ -167,6 +182,7 @@ internal static class ReportCommand {
         b.Append(CultureInfo.InvariantCulture, $"<article class=\"card {TierClass(v.Tier)}\" id=\"m{n}\">\n<div class=\"head\"><h3>{H(name)}</h3>");
         b.Append(CultureInfo.InvariantCulture, $"<span class=\"badge {TierClass(v.Tier)}\">{H(v.TierName)}</span></div>\n");
         var meta = new List<string>();
+        if (v.TierNote is { } note) meta.Add(note);
         if (name != Str(e, "id")) meta.Add($"id {Str(e, "id")}");
         if (rel != null) {
             meta.Add($"version {Str(rel, "version")}");
@@ -176,6 +192,12 @@ internal static class ReportCommand {
         }
         if (meta.Count > 0) b.Append(CultureInfo.InvariantCulture, $"<p class=\"meta\">{H(string.Join(" · ", meta))}</p>\n");
         b.Append(CultureInfo.InvariantCulture, $"<p class=\"summary\">{H(v.TierSummary)}</p>\n");
+        // What the mod requires is installed with it: a note with each dependency's own tier (see its own card).
+        if (v.Dependencies.Count > 0) {
+            b.Append("<p class=\"group-summary\">Installed with it: ");
+            b.Append(string.Join(", ", v.Dependencies.Select(d => $"{H(d.Id)}{(d.Version != null ? " " + H(d.Version) : "")} ({H(d.TierName)}{(d.Through != null ? ", required by " + H(d.Through) : "")}{(d.Scanned ? "" : ": " + H(d.Reason))})")));
+            b.Append(". A dependency has its own result, which is not part of this one.</p>\n");
+        }
         if (v.Tier != "no-code") {
             b.Append(CultureInfo.InvariantCulture, $"<h4>{(v.Tier == "limited-access" ? "Can do" : "Can do (what the check saw, not a complete list)")}</h4>\n<ul class=\"findings\">\n");
             if (v.Labels.Count == 0) b.Append("<li class=\"none\">nothing the check labels</li>\n");
@@ -220,6 +242,8 @@ internal static class ReportCommand {
             Row(".NET runtime", Str(st, "runtime"));
             Row("Policy", Str(st["policy"] as JsonObject, "version") is { } v ? $"{v} (sha256 {Str(st["policy"] as JsonObject, "sha256")})" : null);
             Row("Game", Str(st["game"] as JsonObject, "folder") is { } g ? $"{g} (DLL set sha256 {Str(st["game"] as JsonObject, "sha256")})" : null);
+            Row("Other game builds", (st["game"] as JsonObject)?["others"] is JsonArray others && others.Count > 0
+                ? string.Join(", ", others.Select(x => Str(x as JsonObject, "folder")).OfType<string>()) : null);
             Row("Trusted libraries", st["allowlist"] is JsonObject al && al["files"] is JsonValue files ? $"{files} files (sha256 {Str(al, "sha256")})" : null);
             Row("Scan key", Str(st, "key"));
         }

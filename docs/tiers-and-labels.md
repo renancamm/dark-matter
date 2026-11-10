@@ -12,13 +12,16 @@ of whether the mod is harmful, and it says what the mod *can* do, not what it do
 | **Limited access** | It can only do what's listed. | Ships code, and everything it can run was looked at. The labels are the complete list. |
 | **Broad access** | It can do anything a program on your computer can. | Something in the mod can reach beyond what the check can list, or the check could not look at all. The labels are what it saw, not a complete list. |
 
+A mod's tier covers its own code. The result notes each mod it requires with that mod's own tier
+(see [Usage](usage.md#dependencies)).
+
 A Broad-access result says why, in one or more groups. Every group with a reason is listed, so a
 mod whose reasons move from one group to another between releases stands out even though its
 tier stays the same.
 
 | Group | Shown to players | For example |
 |---|---|---|
-| **Deep game access** | Works with the game's code and memory directly, in ways the check can't follow all the way. | direct memory access, transpilers on the game's code |
+| **Deep game access** | Works with the game's code and memory directly, in ways the check can't follow all the way. | direct memory access, XML serializers, a game type chosen at run time |
 | **System access** | Uses features that can reach anything on your computer. | native code, starting programs, loading code at run time |
 | **Couldn't be fully checked** | Part of the mod couldn't be inspected. | an unreadable file, a script or installer, an embedded archive |
 
@@ -52,8 +55,11 @@ The mod:
   (a reference, pointer, native integer or managed reference over anything: the runtime then reads
   one field's bits as the other's type, with no API call; policy 18). Unions of plain data only
   (integers, floats, bools, chars, the mod's own enums and structs of those) are fine. The game's API
-  is pointer-heavy, so ordinary mods do this. Policy 9 does not yet tell an address the game hands
-  over from one the mod makes up (see [Known gaps](known-gaps.md)). Not counted (policy 27): the unsafe compile
+  is pointer-heavy, so ordinary mods do this. Not counted (policy 39): a pointer to a named type that a
+  game member returned, while the mod only keeps it in a local, passes it back to the game or to its
+  own methods as the same pointer type (or to the game as a reference to that type), and reads fields
+  of the type it points to. A write through it, arithmetic, a cast to another type, a `void*`, and a
+  pointer that did not come from a game call still count (see [Known gaps](known-gaps.md)). Not counted (policy 27): the unsafe compile
   flag on its own (it changes nothing at run time, and every unsafe construct is found in the code
   itself; `--facts` records it as `unsafe-code`), members that touch no memory (`Marshal.OffsetOf`,
   `Marshal.SizeOf`, `Unsafe.SizeOf`, `Unsafe.IsNullRef` and the error-code helpers such as
@@ -71,25 +77,9 @@ The mod:
   every type argument is plain data (no reference, pointer or native integer anywhere in it: the
   runtime then bounds them to the span's own bytes); and an explicit-layout union over a framework
   enum or a plain framework struct, laid out from the shared framework's own metadata
-- uses reflection the check traces only to the game's or its own code: a member of the run-time
-  type of an object whose declared type is a game or mod type (`vehicle.GetType().GetField(...)`:
-  that type or one derived from it; since policy 35 also a value read with `GetValue` through a
-  game or mod member declared as such a type, and a Harmony patch method's `__instance` declared as
-  `object`, see [How it works](how-it-works.md)), a type found by a name built at run time in a game or mod
-  assembly (`typeof(KSA.Program).Assembly.GetType(name)`), or a member from a lookup on a game or
-  mod type (`GetMethods()`, ...) after the array or list was passed to code the check does not
-  follow. Ordinary modding reads game internals this way; the check knows which code it is in but
-  not exactly which member, so the labels may miss what that member does
-- rewrites the game's code, and only the game's, with a Harmony transpiler (`CodeInstruction`,
-  `CodeMatch`, `CodeMatcher`, `Transpilers`, an `ILGenerator`'s labels and locals, or, since policy
-  15, any method Harmony would run as a transpiler: one named `Transpiler` or marked
-  `[HarmonyTranspiler]`, a method taking or returning Harmony instructions, a transpiler given to
-  `Harmony.Patch`, even one that only drops instructions with LINQ; any other target is system
-  access, see below). Harmony compiles the patched game method
-  from the instructions the transpiler returns, which the check does not read as a whole: what the
-  new instructions name is traced (see System access), `OpCodes.Calli` is native code, but
-  what the game method's own instructions do once rearranged is not followed. Ordinary modding
-  does this to change the game's behaviour inside a method
+- uses reflection on a game type chosen at run time (policy 38): a type found by a name built at run
+  time in a game or mod assembly (`typeof(KSA.Program).Assembly.GetType(name)`). The check knows
+  the assembly but not the type, so it cannot list what the type's members do
 - reads or writes XML with `XmlSerializer` for a type: it creates objects of that type and of the
   types its fields, properties and attributes name, and sets their members, which the check does
   not follow (the type is chosen in the mod's code, not by the XML). This holds even when the check
@@ -114,7 +104,7 @@ The mod:
   `ILGenerator.Emit`, `AssemblyBuilder`), compiled expression trees (unless the tree is built only
   from members the check traced, see below), Roslyn, `MetadataUpdater.ApplyUpdate`, an
   `[XmlSerializerAssembly]` attribute. A Harmony transpiler on the game's code is not code
-  generation (see Deep game access)
+  generation (see the label "Rewrites parts of the game's code")
 - rewrites code other than the game's with a Harmony transpiler (policy 12): a transpiler whose
   target is a framework member (`string.Concat`), a trusted library's, one of the mod's own, a
   member of code that was not analyzed, a game type known only up to its derived types, or a target
@@ -170,7 +160,9 @@ The mod:
 - connects to the internet and changes files in its own or the game's folders, where the mod
   loader finds code (any DLL in a mod folder, `mod.toml`, `*.deps.json`, the game's mod
   manifest), or in places the check cannot place outside them. The check does not prove the
-  written bytes came from the network; the pair is enough to install code for the next launch
+  written bytes came from the network; the pair is enough to install code for the next launch.
+  Making a folder and deleting a file or folder do not count for the pair (policy 41): they put
+  nothing there
 
 ## Couldn't be fully checked
 
@@ -199,7 +191,10 @@ The mod:
   != null`, a check whether another mod is installed: nothing is loaded or run; policy 29)
 - calls game code that this game version does not have: an assembly named like the game's (`KSA`,
   `Brutal.*`, `Planet.*`) that the game build the check is run against does not have at all, usually
-  a mod built for another game version (policy 29)
+  a mod built for another game version (policy 29). Neither this nor a missing game member counts
+  when the check is given another game build that has the assembly and defines the member
+  (policy 37, see [Usage](usage.md#several-game-builds)): the call then reaches what that build's
+  game code does, and the result names the build in a warning
 - lists a file that was not analyzed (for example one whose hash changed after extraction)
 
 **Labels**, shown in every tier (the complete list in Limited access, what the check saw in
@@ -208,6 +203,8 @@ Broad access):
 | Label | What it covers |
 |---|---|
 | Changes how the game works | patches game code (Harmony, including `[HarmonyPatch]` attributes, MonoMod, Mono.Cecil) |
+| Rewrites parts of the game's code | a Harmony transpiler on the game's code, and only the game's (policy 38; a Broad-access reason before): `CodeInstruction`, `CodeMatch`, `CodeMatcher`, `Transpilers`, an `ILGenerator`'s labels and locals, a method named `Transpiler` or marked `[HarmonyTranspiler]`, a method taking or returning Harmony instructions, a transpiler given to `Harmony.Patch`. The patched game method counts with everything it can do, and what the new instructions name is traced. An untraced operand, `OpCodes.Calli`, a memory opcode or a target that is not the game's code is a Broad-access reason |
+| Uses the game's internals by reflection | reflection traced to a game or mod type and the types derived from it, without knowing the exact type (policy 38; a Broad-access reason before): a member of the run-time type of an object declared as such a type (`vehicle.GetType().GetField(...)`), a value read with `GetValue` through a member declared as such a type, a Harmony patch method's `__instance` declared as `object`, a member from a lookup after its array was passed to code the check does not follow. A member looked up by name counts with what members of that name can do on the type and on the game types deriving from it. A type used without a named member (an object created from it) counts with everything any of their members can do, unless the use only reads or writes a field |
 | Connects to the internet | any network or pipe connection (not IP addresses or endpoints as values), including XML loaded from a path whose beginning the check cannot trace (it can be a web address) |
 | Changes game saves | file writes traced to the game's save folder |
 | Changes files in its own or the game's folders | file writes or deletes traced to the mod's folder or the game's folders, where the loader finds mod code and settings |

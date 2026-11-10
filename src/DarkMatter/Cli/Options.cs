@@ -6,12 +6,16 @@ internal sealed class UsageException(string message) : Exception(message);
 
 /// <summary>Minimal option parser: "--name value" options, bare flags and positional arguments.</summary>
 internal sealed class Options {
-    readonly Dictionary<string, string> values = [];
+    readonly Dictionary<string, List<string>> values = [];
     readonly HashSet<string> flags = [];
 
     public List<string> Positional { get; } = [];
 
-    public string? Get(string name) => values.GetValueOrDefault(name);
+    /// <summary>The option's value (the last one when it is given more than once), or null.</summary>
+    public string? Get(string name) => values.TryGetValue(name, out var given) ? given[^1] : null;
+
+    /// <summary>Every value of an option that can be given more than once, in the order given.</summary>
+    public IReadOnlyList<string> GetAll(string name) => values.TryGetValue(name, out var given) ? given : [];
 
     public bool Has(params string[] names) => names.Any(flags.Contains);
 
@@ -21,7 +25,8 @@ internal sealed class Options {
             var a = argv[i];
             if (valued.Contains(a)) {
                 if (i + 1 >= argv.Count) throw new UsageException($"{a} needs a value");
-                o.values[a] = argv[++i];
+                if (!o.values.TryGetValue(a, out var given)) o.values[a] = given = [];
+                given.Add(argv[++i]);
             } else if (flags.Contains(a)) {
                 o.flags.Add(a);
             } else if (a.StartsWith('-') && a.Length > 1) {

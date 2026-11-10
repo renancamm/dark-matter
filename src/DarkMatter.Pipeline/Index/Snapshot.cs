@@ -25,7 +25,13 @@ internal sealed record Release(
     string? YankedReason,
     string? Loader,
     string? GameMin,
-    string? GameMax);
+    string? GameMax) {
+    /// <summary>The mods this release names as dependencies (required, recommended, suggested, conflicting).</summary>
+    public IReadOnlyList<Dependency> Dependencies { get; init; } = [];
+}
+
+/// <summary>A dependency a release declares: the listing's id, the kind ("required", "recommends", "suggests", "conflict") and the lowest version, if given.</summary>
+internal sealed record Dependency(string Id, string Kind, string? Min);
 
 /// <summary>A listing: its id, type ("mod", "mod-loader"), display name, and its usable releases.</summary>
 internal sealed record Listing(string Id, string Type, string Name, IReadOnlyList<Release> Releases);
@@ -166,8 +172,14 @@ internal sealed partial class Snapshot {
             : [];
         long? size = download.ValueKind == JsonValueKind.Object && download.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var n) && n >= 0 ? n : null;
         var loader = r.TryGetProperty("loader", out var lo) ? Str(lo, "id") : null;
+        // An entry without a usable id names no listing; one without a kind is taken as required (it then counts).
+        List<Dependency> dependencies = r.TryGetProperty("dependencies", out var deps) && deps.ValueKind == JsonValueKind.Array
+            ? [.. deps.EnumerateArray().Where(x => Str(x, "id") is { Length: > 0 and <= 100 }).Select(x => new Dependency(Str(x, "id")!, Str(x, "kind") ?? "required", Str(x, "min")))]
+            : [];
         return new Release(listingId, version, Str(r, "release_status") ?? "stable", Str(r, "release_date"), url, mirrors, sha.ToLowerInvariant(), size,
-            r.TryGetProperty("yanked", out var y) && y.ValueKind == JsonValueKind.True, Str(r, "yanked_reason"), loader, Str(r, "game_min"), Str(r, "game_max"));
+            r.TryGetProperty("yanked", out var y) && y.ValueKind == JsonValueKind.True, Str(r, "yanked_reason"), loader, Str(r, "game_min"), Str(r, "game_max")) {
+            Dependencies = dependencies,
+        };
     }
 
     static bool IsHttps(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps;

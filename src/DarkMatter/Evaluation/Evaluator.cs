@@ -11,8 +11,10 @@ internal static class Evaluator {
     /// <param name="libraries">Trusted-library profiles.</param>
     /// <param name="gameApi">The game-API map: game member -> capabilities it reaches (empty without a game profile).</param>
     /// <param name="gameTypes">The game's types, from the game profile; null without one.</param>
+    /// <param name="otherGames">Other builds of the game: a game member the current build lacks is looked up there.</param>
+    /// <param name="gameMembers">The declared types of the game's members, from the game profile; null without one.</param>
     public static ModResult Evaluate(ModInput mod, Policy policy, Boundary boundary, TrustedLibraries libraries, IReadOnlyDictionary<string, string[]> gameApi,
-        IReadOnlySet<string>? gameTypes) {
+        IReadOnlySet<string>? gameTypes, IReadOnlyList<OtherGame>? otherGames = null, GameTypes? gameMembers = null) {
         var files = mod.Files.Select(f => new FileResult(f.Path, f.Facts?.Sha256, f.Facts?.Name, f.Facts?.Classification)).ToList();
         if (mod.Files.Count == 0 && mod.Unextracted.Count == 0 && mod.Scripts.Count == 0)
             return Result(policy, Tier.NoCode, [], [], [], [], files);
@@ -68,18 +70,20 @@ internal static class Evaluator {
         }
         var own = OwnAssemblies(mod);
         var access = new TypeAccess(policy, boundary, own, analyzed.SelectMany(a => a.Types.Keys).ToHashSet(StringComparer.Ordinal), libraries, gameApi, gameTypes, analyzed);
-        var provenance = new FieldProvenance(analyzed, methods, access);
-        foreach (var (_, e) in FileAccess.Classify(analyzed, policy, provenance.FieldsWritten, provenance.ReachedByReflection)) Add(caps, e.Cap, e.Detail);
+        var provenance = new FieldProvenance(analyzed, methods, access, gameMembers);
+        var noContent = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (_, e) in FileAccess.Classify(analyzed, policy, provenance.FieldsWritten, provenance.ReachedByReflection, noContent)) Add(caps, e.Cap, e.Detail);
         foreach (var m in methods)
             foreach (var r in m.ReflectedTypes)
                 foreach (var (cap, detail) in access.Reach(r.Type, r.Assembly, provenance.Members(r.Members, r.NameNode, r.Lookup), r.PatchTarget ? TypeAccess.PatchUse(r.Patch) : TypeUse.Reflection, frameworkCaps: false, r.Detail, r.NullTestOnly, r.Derived))
                     Cap(cap, detail);
         var unresolvedFields = new List<(MethodFacts, string)>();
-        var boundedFields = new List<(MethodFacts, string)>();
+        var boundedFields = new List<(MethodFacts, string, string, string?, bool)>();
         var fieldCaps = new List<(MethodFacts, Evidence)>();
         provenance.Resolve(unresolvedFields, boundedFields, fieldCaps);
         foreach (var (_, d) in unresolvedFields) Add(findings, "unresolved-reflection", d);
-        foreach (var (_, d) in boundedFields) Add(findings, "bounded-reflection", d);
+        foreach (var (_, d, type, assembly, member) in boundedFields)
+            foreach (var (cap, detail) in access.BoundedReach(type, assembly, d, member)) Cap(cap, detail);
         foreach (var (_, e) in fieldCaps) Cap(e.Cap, e.Detail);
         foreach (var a in analyzed) {
             foreach (var d in a.EmbeddedBinaries) Add(findings, "embedded-binary", $"{a.Name}: {d}");
@@ -88,9 +92,10 @@ internal static class Evaluator {
         foreach (var m in methods) {
             foreach (var d in m.UnresolvedReflection) Add(findings, "unresolved-reflection", d);
             // Known only up to a type's derived types, or an assembly: bounded when that is the
-            // game's or the mod's own code (deep game access), unresolved otherwise.
+            // game's or the mod's own code (what any member of the type can do, see BoundedReach),
+            // unresolved otherwise.
             foreach (var b in m.BoundedReflection)
-                if (access.Bounded(b.Type, b.Assembly)) Add(findings, "bounded-reflection", b.Detail);
+                if (access.Bounded(b.Type, b.Assembly)) foreach (var (cap, detail) in access.BoundedReach(b.Type, b.Assembly, b.Detail, b.Member)) Cap(cap, detail);
                 else Add(findings, "unresolved-reflection", b.Detail + "  (not the game's or the mod's code)");
             // A member typed on a game type found by name (D5): the lookup can find another type of that name.
             foreach (var (t, d) in m.TypedByName)
@@ -98,7 +103,17 @@ internal static class Evaluator {
             foreach (var d in m.ComActivation) Add(findings, "com-activation", d);
             if (m.DecodeFailed) Add(findings, "decode-failure", m.Name);
         }
-        References(analyzed, own, policy, boundary, libraries, gameApi, findings, caps, Cap);
+        // Game members the current build lacks that another build defines, by build (see OtherBuilds).
+        var inOtherBuilds = new SortedDictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        void SeenInOtherBuild(string build, string member) {
+            if (!inOtherBuilds.TryGetValue(build, out var members)) inOtherBuilds[build] = members = new(StringComparer.Ordinal);
+            members.Add(member);
+        }
+        References(analyzed, own, policy, boundary, libraries, gameApi, findings, caps, Cap, otherGames, SeenInOtherBuild);
+        if (inOtherBuilds.Count > 0) {
+            int count = inOtherBuilds.Values.SelectMany(m => m).Distinct(StringComparer.Ordinal).Count();
+            warnings.Add($"calls {count} game member{(count == 1 ? "" : "s")} the current game build does not define, checked against game build{(inOtherBuilds.Count == 1 ? "" : "s")} {string.Join(", ", inOtherBuilds.Keys)}");
+        }
         PatchTargets(analyzed, access, findings, caps, Cap);
         RewriteTargets(analyzed, methods, access, provenance, caps.ContainsKey("code-rewrite"), findings);
         if (caps.ContainsKey("code-rewrite")) {
@@ -117,13 +132,20 @@ internal static class Evaluator {
                 foreach (var (cap, detail) in access.RewriteExempted(t.Type!, t.Assembly, t.Member != null ? [t.Member] : null, t.Detail))
                     Cap(cap, detail);
         }
+        // Writes that can put content into a file (policy 41): every write but the ones FileAccess found to only
+        // make a folder or delete something. A write reached another way (reflection, a patch, the game, a
+        // library) is taken to. The combinations with a download or with embedded data count these, not every write.
+        foreach (var (write, content) in new[] { ("file-write-code", "file-content-code"), ("file-write-outside", "file-content-outside") })
+            if (caps.TryGetValue(write, out var writes) && writes.Where(d => !noContent.Contains(d)).ToList() is { Count: > 0 } changing)
+                caps[content] = changing;
         foreach (var (cap, ev) in caps)
             if (policy.RaisesTier(cap)) foreach (var e in ev) Add(findings, cap, e);
 
         // Labels are reported in every tier: in Limited access they are the complete list, in Broad
         // access what the check saw.
         var labels = policy.Labels
-            .Select(l => Finding.Of(l.Id, l.Text, l.Caps.Where(caps.ContainsKey).SelectMany(c => caps[c])))
+            // (A finding the policy gives a label, not a Broad-access group, is kept with the findings.)
+            .Select(l => Finding.Of(l.Id, l.Text, l.Caps.SelectMany(c => (caps.GetValueOrDefault(c) ?? []).Concat(policy.RaisesTier(c) ? [] : findings.GetValueOrDefault(c) ?? []))))
             .Where(f => f.Evidence.Count > 0).ToList();
         // Every group with a reason is kept: a mod whose reasons move from one group to another
         // between releases (deep game access only, then system access too) stays visible.
@@ -176,9 +198,14 @@ internal static class Evaluator {
     /// reference to it), or code that was not analyzed. Nothing more for a member the type defines: the
     /// walker looked that one up in the map.
     /// </summary>
-    public static IEnumerable<(string Cap, string Detail)> GameReference(ExternalRef r, string from, Policy policy, Boundary boundary, IReadOnlyDictionary<string, string[]> gameApi) {
+    public static IEnumerable<(string Cap, string Detail)> GameReference(ExternalRef r, string from, Policy policy, Boundary boundary, IReadOnlyDictionary<string, string[]> gameApi,
+        IReadOnlyList<OtherGame>? otherGames = null, Action<string, string>? seenInOtherBuild = null) {
         switch (boundary.GameTarget(r.Member, out var target)) {
             case GameRef.Missing:
+                if (OtherBuilds(r, from, policy, otherGames, seenInOtherBuild) is { } inOther) {
+                    foreach (var reached in inOther) yield return reached;
+                    break;
+                }
                 yield return ("unanalyzed-call", $"{r.Member} in {r.Assembly}, {GameLacksText}  <-  {from}");
                 break;
             case GameRef.Inherited:
@@ -193,10 +220,50 @@ internal static class Evaluator {
         }
     }
 
+    /// <summary>
+    /// What a reference the current game build cannot answer for reaches in the other game builds: for every
+    /// build that has the assembly and whose type (or a base type) defines the member, what that build's
+    /// game-API map says of it, each capability once (from the first build that has it). An empty list:
+    /// defined there, and it reaches nothing. Null: no other build defines it, so what it runs was not
+    /// analyzed. On the current build such a call fails; on a build that defines it, it runs what that build's
+    /// map lists. Only direct references are looked up: reflection on, and patches of, such a member are not.
+    /// </summary>
+    static List<(string Cap, string Detail)>? OtherBuilds(ExternalRef r, string from, Policy policy, IReadOnlyList<OtherGame>? otherGames, Action<string, string>? seen) {
+        List<(string Cap, string Detail)>? reached = null;
+        foreach (var other in otherGames ?? []) {
+            if (other.Boundary.Game?.Contains(r.Assembly) != true) continue;
+            string target = r.Member;
+            IEnumerable<string> caps;
+            if (!r.Member.Contains("::", StringComparison.Ordinal)) {
+                // A bare type: it runs nothing by itself, if that build has it.
+                if (other.Boundary.GameMembers?.ContainsKey(r.Member) != true) continue;
+                caps = [];
+            } else {
+                switch (other.Boundary.GameTarget(r.Member, out target)) {
+                    case GameRef.Missing: continue;
+                    case GameRef.Framework:
+                        var c = policy.Classify(target, r.Parameters);
+                        caps = c.Matched ? c.Caps : ["unclassified-reference"];
+                        break;
+                    default:
+                        caps = other.Api.GetValueOrDefault(target) ?? [];
+                        break;
+                }
+            }
+            reached ??= [];
+            seen?.Invoke(other.Name, r.Member);
+            foreach (var cap in caps)
+                if (!reached.Any(x => x.Cap == cap))
+                    reached.Add((cap, $"{r.Member} ({(target == r.Member ? "game API" : "game API " + target)} of game build {other.Name}, not in the current build)  <-  {from}"));
+        }
+        return reached;
+    }
+
     // Every reference into another assembly must land in code that was analyzed, a trusted
     // library member whose profile is known, the game, or a framework member the policy classifies.
     static void References(List<AssemblyFacts> analyzed, HashSet<string> own, Policy policy, Boundary boundary, TrustedLibraries libraries,
-        IReadOnlyDictionary<string, string[]> gameApi, Dictionary<string, List<string>> findings, Dictionary<string, List<string>> caps, Action<string, string> Cap) {
+        IReadOnlyDictionary<string, string[]> gameApi, Dictionary<string, List<string>> findings, Dictionary<string, List<string>> caps, Action<string, string> Cap,
+        IReadOnlyList<OtherGame>? otherGames = null, Action<string, string>? seenInOtherBuild = null) {
         foreach (var a in analyzed) {
             var called = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var m in a.Methods)
@@ -204,6 +271,11 @@ internal static class Evaluator {
                     switch (boundary.Resolve(r.Assembly, own)) {
                         // Named like a game assembly, which this game build does not have (H9): said as such.
                         case AssemblyKind.Unanalyzed when boundary.MissingGameAssembly(r.Assembly):
+                            // An assembly of another game build: what that build's map says of the member.
+                            if (OtherBuilds(r, m.Name, policy, otherGames, seenInOtherBuild) is { } inOther) {
+                                foreach (var (cap, detail) in inOther) Cap(cap, detail);
+                                break;
+                            }
                             called.Add(r.Assembly);
                             Add(findings, MissingGameCode, $"{r.Member} in {r.Assembly}, {MissingGameText}  <-  {m.Name}");
                             break;
@@ -215,7 +287,7 @@ internal static class Evaluator {
                             Add(findings, "unclassified-reference", $"{r.Member}  <-  {m.Name}");
                             break;
                         case AssemblyKind.Game:
-                            foreach (var (cap, detail) in GameReference(r, m.Name, policy, boundary, gameApi)) Cap(cap, detail);
+                            foreach (var (cap, detail) in GameReference(r, m.Name, policy, boundary, gameApi, otherGames, seenInOtherBuild)) Cap(cap, detail);
                             break;
                         case AssemblyKind.Trusted:
                             if (libraries.Lookup(r.Assembly, r.Member, out var why) is not { } reached) {
@@ -251,9 +323,12 @@ internal static class Evaluator {
             foreach (var name in a.AssemblyRefs) {
                 if (called.Contains(name)) continue;  // already reported for a member
                 var kind = boundary.Resolve(name, own);
-                if (kind == AssemblyKind.Unanalyzed && boundary.MissingGameAssembly(name))
-                    Add(findings, MissingGameCode, $"{a.Name} references {name}, {MissingGameText}");
-                else if (kind == AssemblyKind.Unanalyzed || (kind == AssemblyKind.Trusted && !libraries.Profiled(name)))
+                if (kind == AssemblyKind.Unanalyzed && boundary.MissingGameAssembly(name)) {
+                    // An assembly another game build has is that build's game code: its members are looked up
+                    // above, and one referenced only by its types runs nothing the map lists, as with the current build.
+                    if (otherGames?.Any(o => o.Boundary.Game?.Contains(name) == true) != true)
+                        Add(findings, MissingGameCode, $"{a.Name} references {name}, {MissingGameText}");
+                } else if (kind == AssemblyKind.Unanalyzed || (kind == AssemblyKind.Trusted && !libraries.Profiled(name)))
                     Add(findings, "unanalyzed-call", $"{a.Name} references {name}{(kind == AssemblyKind.Trusted ? " (a trusted library without a profile for every version)" : "")}");
             }
         }

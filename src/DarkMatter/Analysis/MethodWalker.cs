@@ -83,6 +83,21 @@ internal enum Tag {
     /// instance Harmony passes to a patch method (<see cref="Nodes.Instance"/>). GetType() of it is that node (D5, D7).
     /// </summary>
     Value,
+    /// <summary>
+    /// A pointer a game member returned, or one this method was given as a pointer argument (policy 39):
+    /// <see cref="Slot.Text"/> is its type as the signature names it ("Namespace.Type*", see
+    /// AssemblyWalker.IsPlainPointer). It stays one only while it is kept in a local, passed to a game member or a
+    /// method of the mod as a parameter of the same pointer type, or returned as that type. Reading, writing or
+    /// reaching a field through it, arithmetic on it and converting it are raw memory as for any pointer.
+    /// </summary>
+    GamePointer,
+    /// <summary>
+    /// A HarmonyMethod this method has just made for a method of the mod (policy 42, R3): <see cref="Slot.Text"/> is
+    /// that method's key, <see cref="Slot.Number"/> the offset of the instruction that made it. It is followed on the
+    /// stack, and through a local that holds nothing else (policy 44), into <c>Harmony.Patch</c>: anything else that
+    /// takes it makes it an ordinary object (see MethodWalker's handoffs).
+    /// </summary>
+    Handoff,
 }
 
 /// <summary>A tracked value on the stack or in a local.</summary>
@@ -95,8 +110,16 @@ internal enum Tag {
 /// name in whatever assembly has it, "" when that cannot be determined (see <see cref="ReflectedType"/>).</param>
 /// <param name="Value">For a Member: the kind and declared type of the one member a lookup by a constant name found on
 /// exactly a resolved type (see <see cref="MemberValue"/>), which types what is read through it (D5, D6); null otherwise.</param>
-internal readonly record struct Slot(Tag Tag, string? Text = null, int Number = 0, int Store = -1, string? Asm = null, MemberValue? Value = null) {
+/// <param name="Why">Only when the analysis explains itself (<c>analyze --facts</c>): what produced a value the walker
+/// does not follow (an argument, a call's result, a load after a branch). It is a note for the facts output and never
+/// part of what the value is: two slots that differ only in it are equal, so no result depends on it.</param>
+internal readonly record struct Slot(Tag Tag, string? Text = null, int Number = 0, int Store = -1, string? Asm = null, MemberValue? Value = null, string? Why = null) {
     public static readonly Slot Unknown = new(Tag.Unknown);
+
+    public bool Equals(Slot other) => Tag == other.Tag && Text == other.Text && Number == other.Number && Store == other.Store && Asm == other.Asm && Value == other.Value;
+
+    public override int GetHashCode() => HashCode.Combine(Tag, Text, Number, Store, Asm, Value);
+
     /// <summary>Flag on a Member: a Traverse moved to a field or property.</summary>
     public const int Moved = 1;
     /// <summary>Flag on a Type or Member: that type or any type derived from it.</summary>
@@ -125,6 +148,12 @@ internal sealed record MethodShape(IReadOnlySet<int> ByrefArgs, IReadOnlySet<int
     public bool ReflectionReturn { get; init; }
     /// <summary>Declared type of each argument (counting this), null where it is not a class or struct.</summary>
     public IReadOnlyList<DeclaredType?> ArgTypes { get; init; } = [];
+    /// <summary>Arguments declared as object: what each holds comes from what every call passes (see <see cref="Nodes.ObjectArg"/>).</summary>
+    public IReadOnlySet<int> ObjectArgs { get; init; } = new HashSet<int>();
+    /// <summary>Arguments of a plain pointer type, with that type, when the method's pointers are checked (see AssemblyWalker.PointersChecked).</summary>
+    public IReadOnlyDictionary<int, string> PointerArgs { get; init; } = new Dictionary<int, string>();
+    /// <summary>The plain pointer type the method returns, when its pointers are checked; null otherwise.</summary>
+    public string? PointerReturn { get; init; }
     /// <summary>For a Harmony patch method: its <c>__instance</c> argument (declared as object), or -1 (see AssemblyWalker.PatchInstance).</summary>
     public int InstanceArg { get; init; } = -1;
     /// <summary>The types the instance in <see cref="InstanceArg"/> is of (each that type or a derived one); null when they are not known.</summary>
@@ -252,6 +281,7 @@ internal sealed partial class MethodWalker {
     readonly HashSet<int> aliasedStores = [];
     int offset;  // of the instruction being walked: a collection's id is where it is created
     // The instructions of the pass and the index of the one being walked (for NullTestOnly).
+    HashSet<int> passStarts = [];
     List<Instruction> passCode = [];
     byte[] passIl = [];
     int passIndex;
@@ -298,7 +328,11 @@ internal sealed partial class MethodWalker {
     static bool Traced(Slot s) => s.Tag is Tag.Type or Tag.Member or Tag.Node or Tag.Null or Tag.Element;
 
     // Values a local keeps across blocks and a branch carries (see Load and Carried).
-    static bool Kept(Slot s) => Traced(s) || s.Tag is Tag.Path or Tag.Collection or Tag.Enumerator or Tag.Expr or Tag.Object or Tag.Value || IsOperand(s);
+    static bool Kept(Slot s) => Traced(s) || s.Tag is Tag.Path or Tag.Collection or Tag.Enumerator or Tag.Expr or Tag.Object or Tag.Value or Tag.GamePointer || IsOperand(s);
+
+    // Whether a value is a pointer of that type the game returned (see Tag.GamePointer), or a null pointer
+    // (ldnull, or the constant 0 the compiler emits for one).
+    static bool PointerFrom(Slot s, string type) => s is { Tag: Tag.GamePointer } && s.Text == type || s.Tag == Tag.Null || s is { Tag: Tag.Int, Number: 0 };
 
     // The operand of an existing Harmony instruction (see OperandTarget).
     static bool IsOperand(Slot s) => s is { Tag: Tag.Unknown, Text: InstructionOperand };
@@ -309,6 +343,26 @@ internal sealed partial class MethodWalker {
     // wherever either does (an untraced side adds "untraced"). A collection merged with anything
     // but itself (or null) is lost: an alias the walker cannot name may change it.
     Slot Join(Slot a, Slot b) {
+        var joined = JoinValues(a, b);
+        // A HarmonyMethod followed for a manual patch that meets anything but itself or null is no longer followed.
+        // (On the stack it is followed inside one block only: a branch loosens it before any join, see Pass.)
+        if (joined.Tag != Tag.Handoff) {
+            Loosen(a);
+            Loosen(b);
+        }
+        if (!Explain || joined is not { Tag: Tag.Unknown, Text: null, Why: null }) return joined;
+        // For the facts output: what met here (one side when the other is null or says nothing new).
+        string ta = Told(a), tb = Told(b);
+        return joined with { Why = Brief(b.Tag == Tag.Null || ta.Contains(tb, StringComparison.Ordinal) ? ta : a.Tag == Tag.Null || tb.Contains(ta, StringComparison.Ordinal) ? tb : $"a join of {ta} and {tb}") };
+    }
+
+    Slot JoinValues(Slot a, Slot b) {
+        // One followed HarmonyMethod (the one an instruction makes) stays it, also next to null: the stores to a local.
+        if (a.Tag == Tag.Handoff || b.Tag == Tag.Handoff) {
+            if (a.Tag == Tag.Null) return b with { Store = -1 };
+            if (b.Tag == Tag.Null) return a with { Store = -1 };
+            return a.Tag == b.Tag && a.Number == b.Number && a.Text == b.Text ? a with { Store = -1 } : Slot.Unknown;
+        }
         // The address of an instruction's operand stays one (see OperandTarget) when either side is.
         // So does the address of an interpolation handler local, when both are that local's (see Interpolate).
         if (a.Tag == Tag.Address && b.Tag == Tag.Address)
@@ -338,13 +392,23 @@ internal sealed partial class MethodWalker {
         if (b.Tag == Tag.Value && a.Tag == Tag.Null) return b with { Store = -1 };
         if (IsOperand(a) && (IsOperand(b) || b.Tag == Tag.Null)) return a with { Store = -1 };
         if (IsOperand(b) && a.Tag == Tag.Null) return b with { Store = -1 };
+        // A game pointer stays one of its type; null joins with it; anything else it meets is not followed.
+        if (a.Tag == Tag.GamePointer || b.Tag == Tag.GamePointer) {
+            if (a.Tag == Tag.Null) return b with { Store = -1 };
+            if (b.Tag == Tag.Null) return a with { Store = -1 };
+            return a.Tag == b.Tag && a.Text == b.Text ? a with { Store = -1 } : Slot.Unknown;
+        }
         if (!Traced(a) || !Traced(b)) return Slot.Unknown;
         if (a.Tag == Tag.Null) return b with { Store = -1 };
         if (b.Tag == Tag.Null) return a with { Store = -1 };
         if (a.Tag == b.Tag && a.Text == b.Text && a.Number == b.Number && a.Asm == b.Asm && a.Value == b.Value) return a with { Store = -1 };
         // Two different traced types or members: one of them (the compiler reuses a local for both).
-        return HeldOf(a) is { } ha && HeldOf(b) is { } hb && ha.Count + hb.Count <= MaxUnion
-            ? new(Tag.Element, Number: assembly.Union(ha.Concat(hb))) : Slot.Unknown;
+        if (HeldOf(a) is not { } ha || HeldOf(b) is not { } hb) return Slot.Unknown;
+        if (ha.Count + hb.Count <= MaxUnion) return new(Tag.Element, Number: assembly.Union(ha.Concat(hb)));
+        // Too many to keep apart: without what is known of each member (its declared type, MemberValue), the members
+        // of one type are one entry, as they were before members carried it.
+        var plain = ha.Concat(hb).Select(x => x with { Value = null }).ToHashSet();
+        return plain.Count <= MaxUnion ? new(Tag.Element, Number: assembly.Union(plain)) : Slot.Unknown;
     }
 
     const int MaxUnion = 32;
@@ -368,7 +432,67 @@ internal sealed partial class MethodWalker {
 
     // What a stack slot carries into a forward branch target.
     Slot Carried(Slot s) => s.Tag == Tag.Address ? new(Tag.Address, s.Text, handlers.ContainsKey(s.Number - 1) ? s.Number : 0)
-        : Kept(s) || s.Tag is Tag.String ? s with { Store = -1 } : Slot.Unknown;
+        : Kept(s) || s.Tag is Tag.String ? s with { Store = -1 }
+        : Explain ? Slot.Unknown with { Why = $"{Told(s)}, kept on the stack across a branch" } : Slot.Unknown;
+
+    // Whether the walker notes what produced each value it does not follow (see Slot.Why): for the facts output only.
+    bool Explain => assembly.Explain;
+
+    // A value as the facts output describes it: what it is, and for one the walker does not follow, what produced it.
+    static string Told(Slot s) => s.Tag switch {
+        Tag.Unknown when s.Text == InstructionOperand => "the operand of an existing instruction",
+        Tag.Unknown when s.Text == MethodPointer => "a method pointer",
+        Tag.Unknown => s.Why ?? "a value the check does not follow",
+        Tag.Object => $"an object declared as {s.Text}{(s.Why != null ? $" ({s.Why})" : "")}",
+        Tag.Null => "null",
+        Tag.String => "a constant string",
+        Tag.Path => "a string built at run time",
+        Tag.Type => $"the type {s.Text}",
+        Tag.Member => $"a member of {s.Text}",
+        Tag.Node => $"the value of {Nodes.Describe(s.Number == 1 ? Nodes.MemberOf(s.Text!) : s.Text!)}",
+        Tag.Value => $"an object whose type is {Nodes.Describe(s.Text!)}",
+        Tag.Collection or Tag.Enumerator or Tag.Element => "an array or list (or an element of one)",
+        Tag.Delegate => "a delegate to a method of the mod",
+        Tag.Assembly => "an Assembly object",
+        _ => $"a value of another kind ({s.Tag})",
+    };
+
+    // What the instruction just walked pushed, for a value the walker does not follow (see Slot.Why).
+    string Produced(byte[] il, Instruction ins) {
+        var oc = ins.OpCode;
+        short v = oc.Value;
+        if (v >= OpCodes.Ldarg_0.Value && v <= OpCodes.Ldarg_3.Value) return $"argument {v - OpCodes.Ldarg_0.Value}";
+        if (v == OpCodes.Ldarg_S.Value) return $"argument {il[ins.OperandOffset]}";
+        if (v == OpCodes.Ldarg.Value) return $"argument {Il.ReadUInt16(il, ins.OperandOffset)}";
+        if (v >= OpCodes.Ldloc_0.Value && v <= OpCodes.Ldloc_3.Value) return $"local {v - OpCodes.Ldloc_0.Value}";
+        if (v == OpCodes.Ldloc_S.Value) return $"local {il[ins.OperandOffset]}";
+        if (v == OpCodes.Ldloc.Value) return $"local {Il.ReadUInt16(il, ins.OperandOffset)}";
+        if (oc.OperandType is OperandType.InlineMethod or OperandType.InlineField or OperandType.InlineType or OperandType.InlineTok) {
+            string name = Il.MemberName(md, MetadataTokens.EntityHandle(Il.Token(il, ins)));
+            if (v == OpCodes.Call.Value || v == OpCodes.Callvirt.Value) return $"the result of {name}";
+            if (v == OpCodes.Newobj.Value) return $"a new object ({name})";
+            if (FieldLoadOps.Contains(v)) return $"field {name}";
+            return $"{oc.Name} {name}";
+        }
+        return oc.Name ?? "an instruction";
+    }
+
+    // A note kept short: a chain of them (a lookup on a lookup on a join) is cut where it stops being readable.
+    static string Brief(string why) => why.Length <= 400 ? why : why[..400] + " ...";
+
+    // Whether an instruction pushes a value (a call: one that returns something).
+    bool Pushes(byte[] il, Instruction ins) {
+        short v = ins.OpCode.Value;
+        if (v == OpCodes.Newobj.Value) return true;
+        if (v == OpCodes.Call.Value || v == OpCodes.Callvirt.Value)
+            return Il.Signature(md, MetadataTokens.EntityHandle(Il.Token(il, ins))) is not { } sig || sig.ReturnType != "System.Void";
+        return StackEffect.Pushes(ins.OpCode.StackBehaviourPush) > 0;
+    }
+
+    // Records, for the facts output, what an untraced value at a sink (or stored to a node) is and what produced it.
+    void Untraced(string what, Slot value) {
+        if (Explain) mf.Untraced.Add((what, Told(value)));
+    }
 
     static Slot PathSlot(IEnumerable<string> atoms) => new(Tag.Path, PathAtoms.Encode(atoms));
 
@@ -412,8 +536,76 @@ internal sealed partial class MethodWalker {
             mf.ExternalRefs.Add(new(asm, name, c.Matched, ps == null ? null : string.Join(ExternalRef.SignatureSeparator, ps)));
     }
 
+    // Pops a value some instruction consumes. A HarmonyMethod followed for a manual patch (Tag.Handoff) is then no
+    // longer followed: only the consumers that take it with PopKept keep it so.
     Slot Pop() {
-        if (stack.Count == 0) return Slot.Unknown;
+        var t = PopKept();
+        return t.Tag == Tag.Handoff ? Loosened(t) : t;
+    }
+
+    // ── Harmony patches applied by hand (policy 42, R3) ─────────────────────────────────
+    //
+    // `harmony.Patch(original, postfix: new HarmonyMethod(typeof(Patches), "After"))` makes Harmony call After with
+    // the instance the original runs on. The walker follows the HarmonyMethod from the instruction that makes it
+    // (for a method of the mod named by a constant) to the Patch call that takes it, on the stack: a copy that
+    // is stored in a field, returned, passed to anything else, or still on the stack at a branch could be used to patch
+    // another member, or its method read back and invoked, so the handoff is then "loose" and the lookup counts as any
+    // other (the method is reached by reflection, its instance can be any object). It may wait in a local (policy 44)
+    // whose every store is that one handoff or null and whose every load the walker sees as it: each load then goes to
+    // a consumer judged the same way (see Stloc, Load and RecordHandoffs). A handoff that is applied and never
+    // loose is recorded (MethodFacts.ManualPatches) with what the original was traced to, and the lookup that named
+    // the method is marked (ReflectedType.Handoff). FieldProvenance bounds the instance from those per mod.
+    sealed record Handoff(string Method, int FirstRecord, int EndRecord, string Detail);
+    const string HarmonyMethodName = "HarmonyLib.HarmonyMethod";
+    readonly Dictionary<int, Handoff> handoffs = [];
+    readonly Dictionary<int, List<(IReadOnlyList<HeldType>? Originals, string? Node)>> appliedHandoffs = [];
+    readonly HashSet<int> looseHandoffs = [];
+    // The index of the last call walked and the ReflectedTypes it recorded (a lookup whose result the next
+    // instruction hands to a HarmonyMethod).
+    (int Index, int FirstRecord, int EndRecord) lastCall = (-2, 0, 0);
+    // Fields of a HarmonyMethod that only order or log patches: setting one does not take the object.
+    static readonly HashSet<string> HarmonyMethodSettings = [
+        "HarmonyLib.HarmonyMethod::priority", "HarmonyLib.HarmonyMethod::before", "HarmonyLib.HarmonyMethod::after", "HarmonyLib.HarmonyMethod::debug",
+    ];
+
+    void Loosen(Slot s) { if (s.Tag == Tag.Handoff) looseHandoffs.Add(s.Number); }
+
+    // A handoff something else takes: from there on the plain object its constructor made (see Call).
+    Slot Loosened(Slot s) {
+        looseHandoffs.Add(s.Number);
+        return plainHandoffs.GetValueOrDefault(s.Number, Slot.Unknown);
+    }
+    readonly Dictionary<int, Slot> plainHandoffs = [];
+    // Locals a handoff was stored to in this pass (with the handoffs), and locals a load of which the walker saw as
+    // anything but a followed handoff.
+    readonly Dictionary<int, HashSet<int>> handoffLocals = [];
+    readonly HashSet<int> plainLoads = [];
+
+    // What the original of a Harmony.Patch call can be: the members a traced value is (each found by a constant name
+    // on exactly one type), or the node it comes from; neither when the walker did not trace it.
+    (IReadOnlyList<HeldType>? Originals, string? Node) OriginalOf(Slot original) => original.Tag switch {
+        Tag.Member when original.Text != null && (original.Number & (Slot.OrDerived | Slot.Moved)) == 0 => ([.. HeldOf(original)!], null),
+        Tag.Element when original.Number < 0 && original.Text != "member" => ([.. HeldOf(original)!], null),
+        Tag.Node when original.Text != null && original.Number != 1 => (null, original.Text),
+        _ => (null, null),
+    };
+
+    // Records the handoffs that held (see above), once the method has been walked.
+    void RecordHandoffs() {
+        // A handoff kept in a local stays followed only when the local never holds anything else (every store to it
+        // in the method is that handoff or null) and no load of it was seen as anything else: each load then went to
+        // a consumer judged above. This does not rely on the summaries being right, only on this pass.
+        foreach (var (local, kept) in handoffLocals)
+            if (plainLoads.Contains(local) || !stored.TryGetValue(local, out var all) || all.Tag != Tag.Handoff) looseHandoffs.UnionWith(kept);
+        foreach (var (id, made) in handoffs.OrderBy(kv => kv.Key)) {
+            if (looseHandoffs.Contains(id) || !appliedHandoffs.TryGetValue(id, out var uses)) continue;
+            for (int i = made.FirstRecord; i < made.EndRecord && i < mf.ReflectedTypes.Count; i++) mf.ReflectedTypes[i] = mf.ReflectedTypes[i] with { Handoff = true };
+            foreach (var (originals, node) in uses) mf.ManualPatches.Add(new(made.Method, originals, node, made.Detail));
+        }
+    }
+
+    Slot PopKept() {
+        if (stack.Count == 0) return Explain ? Slot.Unknown with { Why = "a value on the stack where a block starts (a loop, a handler, or a join the check does not carry)" } : Slot.Unknown;
         var t = stack[^1];
         stack.RemoveAt(stack.Count - 1);
         return t;
@@ -421,6 +613,7 @@ internal sealed partial class MethodWalker {
 
     // A tracked ProcessStartInfo or collection that leaves the walker's sight can be changed elsewhere.
     void Escape(Slot s) {
+        Loosen(s);
         EscapeStartInfo(s);
         Lose(s, "passed to code the check does not follow there");
     }
@@ -440,6 +633,7 @@ internal sealed partial class MethodWalker {
     // sees it only as an unknown value, and can change it without the walker seeing what it puts in.
     // A start info is no longer followed; a collection's elements are untraced.
     void Drop(Slot s, string why) {
+        Loosen(s);
         EscapeStartInfo(s);
         Lose(s, why);
         if (s.Tag is Tag.Collection or Tag.Enumerator) Coll(s.Number).Tainted ??= why;
@@ -553,8 +747,10 @@ internal sealed partial class MethodWalker {
         else if (locals.TryGetValue(i, out var l)) t = l;
         // Nothing is known at a block start, but a Type or member can still be traced from every
         // store to the local in the method.
-        else if (summaries.TryGetValue(i, out var s)) t = Kept(s) ? s : Slot.Unknown;
-        else t = optimistic ? new(Tag.Null) : Slot.Unknown;
+        else if (summaries.TryGetValue(i, out var s)) t = Kept(s) || s.Tag == Tag.Handoff ? s : !Explain ? Slot.Unknown
+            : Slot.Unknown with { Why = Brief($"local {i} after a branch, which is stored {Told(s)}") };
+        else t = optimistic ? new(Tag.Null) : !Explain ? Slot.Unknown
+            : Slot.Unknown with { Why = $"local {i} after a branch ({(summaries.Count == 0 ? "the locals of this method are not followed across branches" : "no store to it was seen")})" };
         // A local whose address is taken somewhere in the method may have been written through that
         // address where the walker does not see it (a ref local, an address kept on the stack): what it
         // was last seen to hold is not trusted, only its declared type, and a collection or start info
@@ -563,14 +759,16 @@ internal sealed partial class MethodWalker {
         // than handed straight to a call (see escapingLocals).
         if (addressedLocals.Contains(i) && t.Tag is not (Tag.Unknown or Tag.Object) && (t.Tag is not (Tag.Enumerator or Tag.StaticSpan) || escapingLocals.Contains(i))) {
             Escape(t);
-            t = Slot.Unknown;
+            t = Explain ? Slot.Unknown with { Why = $"local {i}, whose address is taken (it held {Told(t)})" } : Slot.Unknown;
         }
         // An object it was seen to hold is not trusted either: anything of the local's declared type (any type,
         // for one declared as object) can be stored through the address, so only that declared type is (below).
         // Before D10 the last object seen was kept, which could be narrower than what the local holds.
-        if (addressedLocals.Contains(i) && t.Tag == Tag.Object) t = Slot.Unknown;
+        if (addressedLocals.Contains(i) && t.Tag == Tag.Object) t = Explain ? Slot.Unknown with { Why = $"local {i}, whose address is taken" } : Slot.Unknown;
         // Otherwise it holds an object of the local's declared type.
-        if (t.Tag == Tag.Unknown && t.Text == null && i < localDeclared.Count && localDeclared[i] is { } d) t = ObjectOf(d);
+        if (t.Tag == Tag.Unknown && t.Text == null && i < localDeclared.Count && localDeclared[i] is { } d) t = ObjectOf(d) with { Why = t.Why };
+        // A load the walker does not see as a followed HarmonyMethod: one kept in this local is then out of sight.
+        if (t.Tag != Tag.Handoff) plainLoads.Add(i);
         return t with { Store = storeIds.TryGetValue(i, out var id) ? id : -1 };
     }
 
@@ -631,7 +829,6 @@ internal sealed partial class MethodWalker {
         ImmutableArray<string> localTypes = [];
         if (!body.LocalSignature.IsNil) {
             localTypes = md.GetStandaloneSignature(body.LocalSignature).DecodeLocalSignature(SignatureNames.Instance, null);
-            if (localTypes.Any(AssemblyWalker.IsPointer)) Note("raw-memory", $"pointer local variable in {mf.Name}", Origin.Structure);
             for (int i = 0; i < localTypes.Length; i++) if (localTypes[i].EndsWith('&')) byrefLocals.Add(i);
             localDeclared = assembly.LocalDeclared(body);
             localShapes = assembly.LocalShapes(body);
@@ -642,6 +839,7 @@ internal sealed partial class MethodWalker {
         // A by-reference argument or local whose own address is taken can be overwritten through
         // that address with any value: it is not trusted to hold a managed reference.
         bool makesCollections = false;
+        bool readsValues = false;
         var starts = Il.BlockStarts(il, code, body);
         for (int k = 0; k < code.Count; k++) {
             var ins = code[k];
@@ -663,7 +861,10 @@ internal sealed partial class MethodWalker {
                 addressedLocals.Add(l);
                 if (!ConsumedByCall(il, code, k, starts)) escapingLocals.Add(l);
             } else if (op == OpCodes.Newarr.Value || ins.OpCode.OperandType == OperandType.InlineMethod) {
-                makesCollections |= MakesCollection(Il.MemberName(md, MetadataTokens.EntityHandle(Il.Token(il, ins))), op);
+                var member = Il.MemberName(md, MetadataTokens.EntityHandle(Il.Token(il, ins)));
+                makesCollections |= MakesCollection(member, op);
+                // A value read by reflection is often kept in a local declared as object (see below).
+                readsValues |= op != OpCodes.Newarr.Value && ReflectionApis.ReadsValue(member);
             } else if (ins.OpCode.OperandType == OperandType.InlineField) {
                 var fh = MetadataTokens.EntityHandle(Il.Token(il, ins));
                 makesCollections |= fh.Kind == HandleKind.FieldDefinition && assembly.FieldType(fh) is { } ft && ReflectionApis.IsReflectionArray(ft);
@@ -678,7 +879,11 @@ internal sealed partial class MethodWalker {
         // (if (m != null) ..., foreach).
         if (localTypes.Any(t => ReflectionApis.IsReflectionType(t) || ReflectionApis.IsReflectionType(t.TrimEnd('[', ']'))
             || t.StartsWith("HarmonyLib.Traverse", StringComparison.Ordinal) || PathAtoms.IsPathType(t) || ReflectionApis.IsExpressionType(t)
-            || t.StartsWith("System.Collections.Generic.", StringComparison.Ordinal) || t.StartsWith("System.Collections.IEnumerator", StringComparison.Ordinal)))
+            || t.StartsWith("System.Collections.Generic.", StringComparison.Ordinal) || t.StartsWith("System.Collections.IEnumerator", StringComparison.Ordinal)
+            || AssemblyWalker.IsPlainPointer(t) || t == HarmonyMethodName)
+            // So is a value read by reflection (FieldInfo.GetValue, PropertyInfo.GetValue), in a local declared as
+            // object: `value?.GetType().GetMethod(name)?.Invoke(value, null)` loads it after a branch (policy 40).
+            || (readsValues && localTypes.Contains("System.Object")))
             summaries = Summaries(il, code, starts, fresh);
         // What the method's collections hold once it has run, so that a change later in the code
         // (or in a later iteration) counts where an element is used.
@@ -689,6 +894,16 @@ internal sealed partial class MethodWalker {
             final = probe.FinalCollections();
         }
         Pass(il, code, starts, fresh);
+        RecordHandoffs();
+        // A pointer local is raw memory unless it only ever holds pointers of its own type that the game
+        // returned (policy 39): a plain pointer type, an address never taken, and every store to it in the
+        // method such a pointer or null (the join of this pass's stores; a local never stored holds null).
+        for (int i = 0; i < localTypes.Length; i++)
+            if (AssemblyWalker.IsPointer(localTypes[i]) && !(AssemblyWalker.IsPlainPointer(localTypes[i]) && !addressedLocals.Contains(i)
+                && (!stored.TryGetValue(i, out var held) || PointerFrom(held, localTypes[i])))) {
+                Note("raw-memory", $"pointer local variable in {mf.Name}", Origin.Structure);
+                break;
+            }
         // An array read from a Type or member array field that this method changes, or passes to
         // code it does not follow, may no longer hold what the field's stores put there.
         if (final != null)
@@ -766,6 +981,7 @@ internal sealed partial class MethodWalker {
         Slot[]? fallThrough = null;
         passCode = code;
         passIl = il;
+        passStarts = starts;
         for (passIndex = 0; passIndex < code.Count; passIndex++) {
             var ins = code[passIndex];
             if (starts.Contains(ins.Offset)) {
@@ -797,6 +1013,11 @@ internal sealed partial class MethodWalker {
             }
             offset = ins.Offset;
             Step(il, ins);
+            if (Explain && stack.Count > 0 && stack[^1] is { Tag: Tag.Unknown or Tag.Object, Why: null } pushed && Pushes(il, ins))
+                stack[^1] = pushed with { Why = Produced(il, ins) };
+            // A HarmonyMethod still on the stack where control leaves this instruction for anywhere but the next one
+            // is seen there only as an unknown value: no longer followed.
+            if (!Il.FallsThrough(ins) || Il.BranchTargets(il, ins).Count > 0) foreach (var x in stack) Loosen(x);
             var shape = stack.Select(Carried).ToArray();
             foreach (var t in Il.BranchTargets(il, ins)) {
                 // What a backward branch keeps on the stack reaches a block that starts with nothing
@@ -815,7 +1036,7 @@ internal sealed partial class MethodWalker {
     // side was already unknown. A collection on a side that is dropped is lost.
     Slot[]? Merge(Slot[]? a, Slot[]? b) {
         if (a != null && b != null && a.Length == b.Length) return [.. a.Zip(b, Join)];
-        foreach (var x in (a ?? []).Concat(b ?? [])) Lose(x, "merged with another value");
+        foreach (var x in (a ?? []).Concat(b ?? [])) { Loosen(x); Lose(x, "merged with another value"); }
         return null;
     }
 
@@ -870,11 +1091,11 @@ internal sealed partial class MethodWalker {
 
         // locals: a tracked value stored and reloaded keeps its tag
         if (v >= OpCodes.Ldloc_0.Value && v <= OpCodes.Ldloc_3.Value) { stack.Add(Load(v - OpCodes.Ldloc_0.Value)); return; }
-        if (v >= OpCodes.Stloc_0.Value && v <= OpCodes.Stloc_3.Value) { Stloc(v - OpCodes.Stloc_0.Value, Pop()); return; }
+        if (v >= OpCodes.Stloc_0.Value && v <= OpCodes.Stloc_3.Value) { Stloc(v - OpCodes.Stloc_0.Value, PopKept()); return; }
         if (v == OpCodes.Ldloc_S.Value) { stack.Add(Load(il[op])); return; }
-        if (v == OpCodes.Stloc_S.Value) { Stloc(il[op], Pop()); return; }
+        if (v == OpCodes.Stloc_S.Value) { Stloc(il[op], PopKept()); return; }
         if (v == OpCodes.Ldloc.Value) { stack.Add(Load(Il.ReadUInt16(il, op))); return; }
-        if (v == OpCodes.Stloc.Value) { Stloc(Il.ReadUInt16(il, op), Pop()); return; }
+        if (v == OpCodes.Stloc.Value) { Stloc(Il.ReadUInt16(il, op), PopKept()); return; }
         if (v == OpCodes.Ldloca_S.Value || v == OpCodes.Ldloca.Value) {
             int i = v == OpCodes.Ldloca_S.Value ? il[op] : Il.ReadUInt16(il, op);
             // A List<T>.Enumerator struct is used through its address (foreach): the local keeps it,
@@ -883,13 +1104,13 @@ internal sealed partial class MethodWalker {
             // call (see ConsumedByCall); any call but the span's indexer drops it (see Call).
             if (Load(i).Tag is Tag.Enumerator or Tag.StaticSpan && !escapingLocals.Contains(i)) { stack.Add(new(Tag.Address, Number: i + 1)); return; }
             Escape(Load(i));
-            StoreLocal(i, Slot.Unknown);  // can be written through the address
+            StoreLocal(i, Explain ? Slot.Unknown with { Why = $"local {i}, written through its address (an out or ref argument, or a struct's own method)" } : Slot.Unknown);  // can be written through the address
             addresses[i] = addresses.GetValueOrDefault(i) + 1;  // see Interpolate
             stack.Add(new(Tag.Address, Number: i + 1));  // which local, for interpolated strings (see Interpolate)
             return;
         }
         if (v == OpCodes.Ldarga_S.Value || v == OpCodes.Ldarga.Value) { stack.Add(new(Tag.Address)); return; }
-        if (v == OpCodes.Dup.Value) { var t = Pop(); stack.Add(t); stack.Add(t); return; }
+        if (v == OpCodes.Dup.Value) { var t = PopKept(); stack.Add(t); stack.Add(t); return; }
         if (v == OpCodes.Ldnull.Value) { stack.Add(new(Tag.Null)); return; }
         if (v >= OpCodes.Ldc_I4_M1.Value && v <= OpCodes.Ldc_I4_8.Value) { stack.Add(new(Tag.Int, Number: v - OpCodes.Ldc_I4_0.Value)); return; }
         if (v == OpCodes.Ldc_I4_S.Value) { stack.Add(new(Tag.Int, Number: (sbyte)il[op])); return; }
@@ -954,6 +1175,9 @@ internal sealed partial class MethodWalker {
             Expose(Peek(0));
             // A returned reference is trusted by every caller (see Call).
             if (shape.RefReturn) RequireReference(Peek(0), "a returned reference");
+            // A returned pointer is trusted by every caller in the mod as one the game returned (see Call).
+            if (shape.PointerReturn is { } returned && !PointerFrom(Peek(0), returned))
+                Note("raw-memory", $"a returned pointer is not one the game returned in {mf.Name}", Origin.Structure);
             if (shape.PathReturn) mf.PathReturns.UnionWith(PathAtoms.Combine(Atoms(Peek(0), true)));
             // A returned Type or member is what a call to this method yields (see Call).
             if (shape.ReflectionReturn) StoreNode(Nodes.Return(mf.Key), Peek(0));
@@ -972,7 +1196,8 @@ internal sealed partial class MethodWalker {
         if (v == OpCodes.Ldelem_Ref.Value) {
             Pop();
             var array = Pop();
-            stack.Add(array.Tag == Tag.Path ? array with { Store = -1 } : array.Tag == Tag.Collection ? Taken(array.Number) : Slot.Unknown);
+            stack.Add(array.Tag == Tag.Path ? array with { Store = -1 } : array.Tag == Tag.Collection ? Taken(array.Number)
+                : Explain ? Slot.Unknown with { Why = Brief(array.Tag == Tag.Null ? "an element of an array the check does not follow" : $"an element of {Told(array)}") } : Slot.Unknown);
             return;
         }
         // Storing into a collection's element: what is stored is recorded (see AddTo).
@@ -1055,6 +1280,26 @@ internal sealed partial class MethodWalker {
                 }
             }
 
+            // Setting a HarmonyMethod's priority (an object initializer: dup, value, stfld) does not take the object.
+            if (v == OpCodes.Stfld.Value && Peek(1).Tag == Tag.Handoff && HarmonyMethodSettings.Contains(name) && assembly.Models(h, name)) {
+                Escape(Pop());
+                PopKept();
+                return;
+            }
+            // A field reached through a pointer the game returned: the mod looks at what it points to. Reading a
+            // field of the type the pointer is declared to point to stays inside what the game handed over and
+            // changes nothing: not raw memory (policy 39). A write, and a field of another type than the pointer's, are.
+            // The address of such a field is a pointer to the field's type inside the same game memory (the
+            // compiler takes it to read a field of a struct field, p->Pos.X): followed as a game pointer.
+            if (v == OpCodes.Ldflda.Value && Peek(0) is { Tag: Tag.GamePointer } owner && owner.Text == DeclaringType(name) + "*"
+                && assembly.FieldType(h) is { } pointee && AssemblyWalker.IsPlainPointer(pointee + "*")) {
+                Pop();
+                stack.Add(new(Tag.GamePointer, pointee + "*"));
+                return;
+            }
+            if ((v == OpCodes.Ldflda.Value || v == OpCodes.Ldfld.Value && Peek(0).Text != DeclaringType(name) + "*") && Peek(0).Tag == Tag.GamePointer
+                || v == OpCodes.Stfld.Value && Peek(1).Tag == Tag.GamePointer)
+                Note("raw-memory", $"field {name} is {(v == OpCodes.Stfld.Value ? "written" : v == OpCodes.Ldflda.Value ? "addressed" : "read as another type")} through a pointer in {mf.Name}", Origin.Structure);
             if (FieldLoadOps.Contains(v) || FieldStoreOps.Contains(v) || FieldAddressOps.Contains(v)) {
                 if (assembly.KeyOf(h) is { } key) {
                     if (!FieldStoreOps.Contains(v)) mf.FieldLoads.Add(key);
@@ -1131,7 +1376,8 @@ internal sealed partial class MethodWalker {
             if (v == OpCodes.Ldelem.Value) {
                 Pop();
                 var array = Pop();
-                stack.Add(array.Tag == Tag.Path ? array with { Store = -1 } : array.Tag == Tag.Collection ? Taken(array.Number) : Slot.Unknown);
+                stack.Add(array.Tag == Tag.Path ? array with { Store = -1 } : array.Tag == Tag.Collection ? Taken(array.Number)
+                : Explain ? Slot.Unknown with { Why = Brief(array.Tag == Tag.Null ? "an element of an array the check does not follow" : $"an element of {Told(array)}") } : Slot.Unknown);
                 return;
             }
             // An array of members, types or expressions starts empty (see NewCollection).
@@ -1188,6 +1434,12 @@ internal sealed partial class MethodWalker {
         : shape.PathArgs.Contains(i) ? PathSlot([PathAtoms.Argument(mf.Key, i)])
         // A Type or member argument is what every call passes (resolved per mod, see Nodes).
         : shape.ReflectionArgs.Contains(i) ? new(Tag.Node, Nodes.Arg(mf.Key, i))
+        // A pointer argument is what every call in the mod passes: a pointer the game returned (checked at each
+        // call, see Call), unless this method stores to the argument or takes its address.
+        : shape.PointerArgs.TryGetValue(i, out var pointer) ? (changedArgs.Contains(i) ? Slot.Unknown : new(Tag.GamePointer, pointer))
+        // An argument declared as object is an object of the types every call passes (policy 42, D8; resolved per mod, and
+        // any object when code outside the mod can call the method), unless this method stores to it or takes its address.
+        : shape.ObjectArgs.Contains(i) && !changedArgs.Contains(i) ? new(Tag.Value, Nodes.ObjectArg(mf.Key, i))
         : i < shape.ArgTypes.Count && shape.ArgTypes[i] is { } d ? ObjectOf(d)
         : Slot.Unknown;
 
@@ -1218,6 +1470,15 @@ internal sealed partial class MethodWalker {
 
     // stloc: a by-reference local is trusted to hold a managed reference wherever it is loaded.
     void Stloc(int i, Slot value) {
+        // A HarmonyMethod followed for a manual patch may wait in a local (policy 44): it stays followed while every
+        // store to the local is that one handoff and every load of it is seen as one (checked in RecordHandoffs).
+        if (value.Tag == Tag.Handoff) {
+            if (addressedLocals.Contains(i) || byrefLocals.Contains(i)) value = Loosened(value);
+            else {
+                if (!handoffLocals.TryGetValue(i, out var kept)) handoffLocals[i] = kept = [];
+                kept.Add(value.Number);
+            }
+        }
         if (byrefLocals.Contains(i)) RequireReference(value, $"a value stored to by-reference local {i}");
         // A collection or start info stored to a local whose address is taken can be changed through
         // that address (an enumerator only when an address of it is not handed straight to a call).
@@ -1278,7 +1539,8 @@ internal sealed partial class MethodWalker {
         var ps = sig.ParameterTypes;
         int self = sig.Header.IsInstance && !isNewobj ? 1 : 0;
         var args = new Slot[ps.Length + self];
-        for (int i = args.Length - 1; i >= 0; i--) args[i] = Pop();
+        for (int i = args.Length - 1; i >= 0; i--) args[i] = PopKept();
+        int recordsBefore = mf.ReflectedTypes.Count;
 
         var classification = policy.Classify(name, ps);
         External(h, name, classification, ps);
@@ -1292,9 +1554,35 @@ internal sealed partial class MethodWalker {
         // counts as, hold only for those members themselves, not for a type that is only named like
         // one (see AssemblyWalker.Models): that is ordinary code, or code that was not analyzed.
         bool modelled = assembly.Models(h, name);
-        if (h.Kind != HandleKind.MethodDefinition && (AssemblyWalker.IsPointer(sig.ReturnType) || ps.Any(AssemblyWalker.IsPointer))
+        // A HarmonyMethod followed for a manual patch (see the handoffs above): Harmony.Patch(original, prefix, postfix,
+        // transpiler, finalizer) takes it as a prefix, postfix or finalizer, which Harmony calls with the original's
+        // instance. Any other call takes it out of sight (a transpiler is given no instance, and is not bounded here).
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i].Tag != Tag.Handoff) continue;
+            int pi = i - self;
+            if (modelled && !isNewobj && self == 1 && name == "HarmonyLib.Harmony::Patch" && ps.Length >= 5 && ps[0] == "System.Reflection.MethodBase"
+                && pi is 1 or 2 or 4 && ps[pi] == "HarmonyLib.HarmonyMethod") {
+                if (!appliedHandoffs.TryGetValue(args[i].Number, out var uses)) appliedHandoffs[args[i].Number] = uses = [];
+                uses.Add(OriginalOf(args[self]));
+            } else {
+                args[i] = Loosened(args[i]);
+            }
+        }
+        // Pointers passed on (policy 39): a game member, or a method of the mod whose pointers are checked, given
+        // for every pointer parameter a pointer of that type the game returned (or null). A pointer it returns
+        // is then one the game returned too (below). The mod never looks at what such a pointer points to.
+        bool pointerSignature = AssemblyWalker.IsPointer(sig.ReturnType) || ps.Any(AssemblyWalker.IsPointer);
+        bool ownChecked = assembly.PointersChecked(h);
+        bool passedOn = pointerSignature && (ownChecked || (h.Kind != HandleKind.MethodDefinition && assembly.IsGameAssembly(assembly.ExternalAssemblyOf(h))))
+            && (!AssemblyWalker.IsPointer(sig.ReturnType) || AssemblyWalker.IsPlainPointer(sig.ReturnType));
+        for (int i = 0; passedOn && i < ps.Length; i++)
+            if (AssemblyWalker.IsPointer(ps[i])) passedOn = AssemblyWalker.IsPlainPointer(ps[i]) && PointerFrom(args[i + self], ps[i]);
+        if (h.Kind != HandleKind.MethodDefinition && pointerSignature && !passedOn
             && !(modelled && PointerSignatureAccountedFor(h, name, ps, args, self)))
             Note("raw-memory", $"pointer type in the signature of {name}  <-  {mf.Name}", Origin.Structure);
+        // The mod's own method trusts its pointer arguments: each call must give it ones the game returned.
+        if (ownChecked && pointerSignature && !passedOn)
+            Note("raw-memory", $"a pointer argument of {name} is not a pointer the game returned  <-  {mf.Name}", Origin.Structure);
         if (isHelper) caps.Remove("raw-memory");
         // MemoryMarshal.AsBytes/Cast/Read/Write (and the Try forms) with every type argument plain data (C2,
         // policy 34): see MemoryMarshalReinterpretations. Any other MemoryMarshal member, or a type argument
@@ -1348,8 +1636,12 @@ internal sealed partial class MethodWalker {
         // A by-reference argument is written or read through by the callee, which trusts it to be
         // a managed reference (see Arg). The receiver of a value type's method is not checked here:
         // a member reference does not say whether its type is a value type (see docs/known-gaps.md).
+        // (A game member given, for a reference to T, a pointer to T the game returned gets its own memory back:
+        // passed on like a pointer parameter, policy 39.)
+        bool gameMember = h.Kind != HandleKind.MethodDefinition && assembly.IsGameAssembly(assembly.ExternalAssemblyOf(h));
         for (int i = 0; i < ps.Length; i++)
-            if (ps[i].EndsWith('&') && !isHelper) RequireReference(args[i + self], $"by-reference argument {i} of {name}");
+            if (ps[i].EndsWith('&') && !isHelper && !(gameMember && args[i + self] is { Tag: Tag.GamePointer } given && given.Text == ps[i][..^1] + "*"))
+                RequireReference(args[i + self], $"by-reference argument {i} of {name}");
 
         // An XmlSerializer for a type this code does not fix (typeof(T), a Type it is given, a run-time
         // type) fills whatever type its caller or the run time chooses (see the policy's game.exempt).
@@ -1413,14 +1705,23 @@ internal sealed partial class MethodWalker {
             r = new(Tag.StaticRef, Number: span.Number - (index.Number * es));
         else if (r.Tag == Tag.Unknown) r = PathResult(h, name, sig, args, self, isNewobj, modelled) ?? r;
         // Anything else is an object of the type the method declares it returns (a new object: exactly of its type).
-        if (r is { Tag: Tag.Unknown, Text: null }) {
+        if (r is { Tag: Tag.Unknown, Text: null } or { Tag: Tag.Handoff }) {
             var declared = !isNewobj ? assembly.ReturnDeclared(h)
                 : h.Kind == HandleKind.MethodDefinition ? new(Il.TypeName(md, md.GetMethodDefinition((MethodDefinitionHandle)h).GetDeclaringType()), assembly.Name, true)
                 : h.Kind == HandleKind.MemberReference ? assembly.DeclaredOfToken(Il.ParentType(md, md.GetMemberReference((MemberReferenceHandle)h).Parent), true)
                 : null;
-            if (declared is { } d) r = ObjectOf(d);
+            // (A HarmonyMethod followed for a manual patch stays that; this is what it is once something else takes it.)
+            if (r.Tag == Tag.Handoff) plainHandoffs[r.Number] = declared is { } plain ? ObjectOf(plain) : Slot.Unknown;
+            else if (declared is { } d) r = ObjectOf(d);
         }
+        if (passedOn && !isNewobj && AssemblyWalker.IsPointer(sig.ReturnType)) r = new(Tag.GamePointer, sig.ReturnType);
+        // For the facts output: an untraced result of a reflection member names what it was called on, so a chain of
+        // lookups reads back to the value that was not followed (see Slot.Why).
+        if (Explain && r is { Tag: Tag.Unknown or Tag.Object, Why: null } && args.Length > 0 && !isNewobj
+            && (name == "System.Object::GetType" || name.StartsWith("HarmonyLib.", StringComparison.Ordinal) || ReflectionApis.IsReflectionType(DeclaringType(name))))
+            r = r with { Why = Brief($"the result of {name} on {Told(args[0])}") };
         if (isNewobj || sig.ReturnType != "System.Void") stack.Add(r);
+        lastCall = (passIndex, recordsBefore, mf.ReflectedTypes.Count);
     }
 
     const string XmlGame = "xml-serialization-game";
@@ -1465,6 +1766,29 @@ internal sealed partial class MethodWalker {
             // member reference, as is one of the mod's other assemblies).
             else if (ps[i] == "System.String")
                 Set(mf.StringArguments, Nodes.Arg(key, i + numbered)).Add(StringValue(args[i + self]));
+            // An object given to a parameter declared as object: the callee's value is of its run-time types (D8).
+            else if (ps[i] == "System.Object")
+                StoreObject(Nodes.ObjectArg(key, i + numbered), args[i + self]);
+        }
+    }
+
+    // Records the run-time types of an object given to an object node (see Nodes.ObjectArg): the type it is declared
+    // as (that type or a derived one; exactly it for a new or boxed one), the types of the node its own type comes
+    // from, nothing for null, or a value the walker cannot type (one declared only as object or a root type too).
+    void StoreObject(string node, Slot value) {
+        switch (value.Tag) {
+            case Tag.Null:
+                break;
+            case Tag.Object when value.Text is { } declared && declared is not ("System.Object" or "System.ValueType" or "System.Enum"):
+                Set(mf.ReflectionStores, node).Add(new(declared, value.Asm, false, Bounded: value.Number != 1));
+                break;
+            case Tag.Value when value.Text != null:
+                Set(mf.FieldCopies, node).Add(value.Text);
+                break;
+            default:
+                mf.UntrackedStores.Add(node);
+                Untraced($"{Nodes.Describe(node)} is given a value  <-  {mf.Name}", value);
+                break;
         }
     }
 
@@ -2034,6 +2358,7 @@ internal sealed partial class MethodWalker {
         }
         if (IsOperand(v)) return;
         mf.UnresolvedReflection.Add($"{what} is not traced to a name  <-  {mf.Name}");
+        Untraced($"{what}  <-  {mf.Name}", v);
     }
 
     // An element taken out of a collection: whatever it is, code now has it.
@@ -2074,6 +2399,7 @@ internal sealed partial class MethodWalker {
                 break;
             default:
                 mf.UntrackedStores.Add(node);
+                Untraced($"{Nodes.Describe(node)} is given a value  <-  {mf.Name}", value);
                 break;
         }
     }
@@ -2083,7 +2409,11 @@ internal sealed partial class MethodWalker {
     void StoreArray(string node, Slot value) {
         if (value.Tag == Tag.Null) return;  // holds no array
         Expose(value);
-        if (value.Tag != Tag.Collection) { mf.UntrackedStores.Add(node); return; }
+        if (value.Tag != Tag.Collection) {
+            mf.UntrackedStores.Add(node);
+            Untraced($"{Nodes.Describe(node)} is given an array  <-  {mf.Name}", value);
+            return;
+        }
         // What the collection holds once the method has run (the first pass records nothing).
         if (StateOf(value.Number) is not { } state) return;
         if (state.Tainted != null || (state.Escaped != null && !state.Lookup)) { mf.UntrackedStores.Add(node); return; }
@@ -2108,7 +2438,7 @@ internal sealed partial class MethodWalker {
                 break;  // throws
             case Tag.Type or Tag.Member:
                 if (t.Text != null && (t.Number & Slot.OrDerived) != 0) {
-                    mf.BoundedReflection.Add(new(t.Text, t.Asm, $"{name} on a member of {Bound(t.Text, t.Asm)}  <-  {mf.Name}"));
+                    mf.BoundedReflection.Add(new(t.Text, t.Asm, $"{name} on a member of {Bound(t.Text, t.Asm)}  <-  {mf.Name}", t.Tag == Tag.Member));
                     if (writesFields) mf.ReflectionFieldWrites.Add(t.Text == "*" ? "*" : t.Text + "+");
                 } else if (writesFields && t.Text != null) {
                     mf.ReflectionFieldWrites.Add(t.Text);
@@ -2122,6 +2452,7 @@ internal sealed partial class MethodWalker {
                 break;
             default:
                 mf.UnresolvedReflection.Add($"{name} on a type or member not traced to a name  <-  {mf.Name}");
+                Untraced($"{name}  <-  {mf.Name}", t);
                 break;
         }
     }
@@ -2139,7 +2470,7 @@ internal sealed partial class MethodWalker {
         }
         foreach (var h in state.Held) {
             if (h.Bounded || state.Escaped != null)
-                mf.BoundedReflection.Add(new(h.Type, h.Assembly, $"{what} {(state.Escaped != null ? $"({state.Escaped}) " : "")}holding members of {Bound(h.Type, h.Assembly)}  <-  {mf.Name}"));
+                mf.BoundedReflection.Add(new(h.Type, h.Assembly, $"{what} {(state.Escaped != null ? $"({state.Escaped}) " : "")}holding members of {Bound(h.Type, h.Assembly)}  <-  {mf.Name}", h.Member));
             if (writesFields) mf.ReflectionFieldWrites.Add(h.Bounded || state.Escaped != null ? (h.Type == "*" ? "*" : h.Type + "+") : h.Type);
         }
         if (state.Node != null)
@@ -2154,7 +2485,7 @@ internal sealed partial class MethodWalker {
                 break;  // patches nothing (Harmony reports an error)
             case Tag.Type or Tag.Member:
                 if (t.Text != null && (t.Number & Slot.OrDerived) != 0)
-                    mf.BoundedReflection.Add(new(t.Text, t.Asm, $"Harmony patch target returned by {mf.Name} is a member of {Bound(t.Text, t.Asm)}"));
+                    mf.BoundedReflection.Add(new(t.Text, t.Asm, $"Harmony patch target returned by {mf.Name} is a member of {Bound(t.Text, t.Asm)}", t.Tag == Tag.Member));
                 break;  // otherwise a traced member
             case Tag.Node when t.Text != null:
                 mf.FieldReflection.Add(new(NodeSource(t), $"Harmony patch target returned from {Nodes.Describe(NodeSource(t))}  <-  {mf.Name}", true));
@@ -2164,6 +2495,7 @@ internal sealed partial class MethodWalker {
                 break;
             default:
                 mf.UnresolvedReflection.Add($"Harmony patch target returned by {mf.Name} is not traced to a name");
+                Untraced($"Harmony patch target returned by {mf.Name}", t);
                 break;
         }
     }
@@ -2196,6 +2528,7 @@ internal sealed partial class MethodWalker {
                 return;
         }
         Add(null, null, null, false, "is not traced to a member");
+        Untraced($"{what}  <-  {mf.Name}", t);
     }
 
     // Harmony's manual patching: Patch with a transpiler rewrites the original; a reverse patch rewrites
@@ -2245,6 +2578,7 @@ internal sealed partial class MethodWalker {
                 break;
             default:
                 mf.UnresolvedReflection.Add($"Harmony patch targets returned by {mf.Name} are not traced to a name");
+                Untraced($"Harmony patch targets returned by {mf.Name}", t);
                 break;
         }
     }
@@ -2349,6 +2683,7 @@ internal sealed partial class MethodWalker {
                 return new(Tag.Type, "*", Slot.OrDerived, Asm: inAsm);
             }
             mf.UnresolvedReflection.Add($"{name}(runtime value)  <-  {mf.Name}");
+            Untraced($"the type name given to {name}  <-  {mf.Name}", t);
             return Slot.Unknown;
         }
         // The run-time type of an object of a declared class or struct: that type, or (unless the
@@ -2427,9 +2762,21 @@ internal sealed partial class MethodWalker {
             if (byName is var (typeArg, nameArg, lookup)) {
                 var given = Arg(nameArg) is { Tag: Tag.String, Text: { } gn } ? gn : null;
                 var members = ReflectionApis.MemberNames(lookup, given);
+                int firstRecord = mf.ReflectedTypes.Count;
                 LookUp(Arg(typeArg), members, given == null ? NameParameter(Arg(nameArg)) : null, lookup, false);
+                // new HarmonyMethod(typeof(T), "Name"): followed to the Harmony.Patch call that takes it (R3).
+                if (name == "HarmonyLib.HarmonyMethod::.ctor" && given != null && !given.Contains('*', StringComparison.Ordinal)
+                    && Arg(typeArg) is { Tag: Tag.Type, Text: { } patchType, Asm: { Length: > 0 } patchAsm } pt && patchType != "*" && (pt.Number & Slot.OrDerived) == 0)
+                    return MakeHandoff($"{patchAsm}|{patchType}::{given}", firstRecord, mf.ReflectedTypes.Count);
             }
         }
+        // new HarmonyMethod(methodInfo) on the method the instruction before looked up by a constant name on exactly one
+        // type (typeof(T).GetMethod("Name", flags), AccessTools.Method(typeof(T), "Name")), with nothing between them
+        // and no other way to this instruction: the lookup's result goes nowhere else (R3).
+        if (name == "HarmonyLib.HarmonyMethod::.ctor" && self == 0 && sig.ParameterTypes is ["System.Reflection.MethodInfo"]
+            && Arg(0) is { Tag: Tag.Member, Text: { } of, Asm: { Length: > 0 } ofAsm, Value: { Kind: MemberKind.Method, Sole: { } found } } looked
+            && (looked.Number & (Slot.OrDerived | Slot.Moved)) == 0 && lastCall.Index == passIndex - 1 && !passStarts.Contains(offset))
+            return MakeHandoff($"{ofAsm}|{of}::{found}", lastCall.FirstRecord, lastCall.EndRecord);
         // A type named as a type argument (Activator.CreateInstance<T>(), AccessTools.CreateInstance<T>(),
         // Traverse.Create<T>()) is reached like a typeof. A generic parameter is the caller's choice:
         // new T() in generic code is not followed (see docs/known-gaps.md).
@@ -2459,6 +2806,12 @@ internal sealed partial class MethodWalker {
         return Traverse(h, name, sig, args) ?? Slot.Unknown;
     }
 
+    // A HarmonyMethod made here for a method of the mod, to be followed to Harmony.Patch (see the handoffs).
+    Slot MakeHandoff(string method, int firstRecord, int endRecord) {
+        handoffs[offset] = new(method, firstRecord, endRecord, $"Harmony.Patch is given {method[(method.IndexOf('|', StringComparison.Ordinal) + 1)..]} as a patch method  <-  {mf.Name}");
+        return new(Tag.Handoff, method, offset);
+    }
+
     // The members a lookup reaches, as evidence: "::a/b", with a nested type's members (see
     // ReflectionApis.MemberNames) as " and nested type N"; nothing for any member.
     static string Shown(IReadOnlyList<string>? members) {
@@ -2475,9 +2828,10 @@ internal sealed partial class MethodWalker {
             || type == "*" || ReflectionApis.LookupKind(method) is not { } kind
             || ReflectionApis.MemberNameArgument(name) is not int ni || ni >= args.Length || args[ni] is not { Tag: Tag.String, Text: { } memberName })
             return member;
-        var value = assembly.MemberValueOf(type, receiver.Asm, kind, memberName);
+        var value = assembly.MemberOf(type, receiver.Asm, kind, memberName);
         // Typed from the game-API map for a game type found by name: only if the game alone has a type of that name.
-        if (value != null && receiver.Asm == null)
+        // (A method known only to be the type's own, MemberValue.Sole, is checked where it bounds an instance.)
+        if (value is { Typed: true } && receiver.Asm == null)
             mf.TypedByName.Add((type, $"{type}::{memberName} ({method}, a type found by name) is typed as the game's {value.Value.Type}, but another type of that name can be the one found  <-  {mf.Name}"));
         return member with { Value = value };
     }
@@ -2498,7 +2852,7 @@ internal sealed partial class MethodWalker {
         if (read is not var (kind, value) || self != 1 || args.Length == 0) return null;
         var receiver = args[0];
         switch (receiver.Tag) {
-            case Tag.Member when receiver.Value is { } v && v.Kind == kind && (receiver.Number & (Slot.OrDerived | Slot.Moved)) == 0:
+            case Tag.Member when receiver.Value is { Typed: true } v && v.Kind == kind && (receiver.Number & (Slot.OrDerived | Slot.Moved)) == 0:
                 return value ? new Slot(Tag.Object, v.Type, 0, Asm: v.Asm) : new Slot(Tag.Type, v.Type, 0, Asm: v.Asm);
             case Tag.Node when receiver.Text != null: {
                 var node = Nodes.TypeOfNode(kind, value, NodeSource(receiver));

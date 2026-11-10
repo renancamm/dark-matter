@@ -22,8 +22,9 @@ internal static class FileAccess {
     /// <param name="reflected">Whether a method (by node key) can be reached by reflection, from
     /// <see cref="FieldProvenance.ReachedByReflection"/>: it is then called with arguments the check does
     /// not see, as one called from outside is; null to count only the methods called from outside.</param>
+    /// <param name="noContent">Receives the evidence text of each write that puts no content into a file (see NoContent); null to leave them out.</param>
     public static List<(MethodFacts Method, Evidence Evidence)> Classify(IReadOnlyCollection<AssemblyFacts> assemblies, Policy policy, Func<string, bool>? fieldsWritten = null,
-        Func<string, bool>? reflected = null) {
+        Func<string, bool>? reflected = null, ISet<string>? noContent = null) {
         var methods = assemblies.SelectMany(a => a.Methods).ToList();
         var resolver = new Resolver(assemblies, methods, fieldsWritten, reflected);
         List<(MethodFacts, Evidence)> result = [];
@@ -41,6 +42,8 @@ internal static class FileAccess {
                 bool code = origins.Any(policy.CodeOrigins.Contains);
                 string detail = $"{op.Member}  <-  {m.Name}  (path from: {string.Join(", ", origins.Order(StringComparer.Ordinal))})";
                 bool writes = op.Kind == FileOpKind.Write;
+                // A write that only makes a folder or deletes something puts no content anywhere (see NoContent).
+                if (writes && NoContent.Contains(op.Member)) noContent?.Add(detail);
                 if (writes && origins.Contains("saves")) result.Add((m, new("file-saves", detail, Origin.Reference)));
                 if (writes && code) result.Add((m, new("file-write-code", detail, Origin.Reference)));
                 if (outside.Count > 0) result.Add((m, new(writes ? "file-write-outside" : "file-read-outside", detail, Origin.Reference)));
@@ -65,6 +68,18 @@ internal static class FileAccess {
         }
         return result;
     }
+
+    /// <summary>
+    /// File operations the policy counts as writes that put no content into a file: making a folder, deleting a
+    /// file or a folder. They are labelled like any write, but cannot install anything, so they do not count
+    /// for the combinations of a write with a download or with embedded data (policy 41). By exact name:
+    /// Directory.CreateSymbolicLink, File.Create and the like do put something where the loader looks.
+    /// </summary>
+    static readonly HashSet<string> NoContent = new(StringComparer.Ordinal) {
+        "System.IO.Directory::CreateDirectory", "System.IO.DirectoryInfo::Create", "System.IO.DirectoryInfo::CreateSubdirectory",
+        "System.IO.File::Delete", "System.IO.Directory::Delete", "System.IO.FileInfo::Delete", "System.IO.DirectoryInfo::Delete",
+        "System.IO.FileSystemInfo::Delete",
+    };
 
     // Resolves path atoms to origins: the least solution of the references' definitions.
     sealed class Resolver {

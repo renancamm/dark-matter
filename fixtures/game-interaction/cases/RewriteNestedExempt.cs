@@ -5,6 +5,7 @@
 // that exemption is given back. Expected: Broad access, deep game access ("Rewrites ...") and "Starts
 // other programs" (H3 review: policy 19 compared the exemption's nested-type name, empty for a pattern
 // that ends at the '/', with the name looked up, and gave nothing back).
+// Policy 38: a transpiler on the game's code is the label "Rewrites parts of the game's code", not a Broad-access reason.
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;

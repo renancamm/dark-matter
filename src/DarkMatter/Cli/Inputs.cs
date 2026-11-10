@@ -69,7 +69,7 @@ internal static class Inputs {
     }
 
     /// <summary>Profile files written by `darkmatter profile`; one without the current format is refused.</summary>
-    public const int ProfileFormat = 7;
+    public const int ProfileFormat = 8;
 
     // A profile is derived with one policy's rules. With another policy its capabilities could be
     // missing ones the current rules would find, so it must be regenerated, not used.
@@ -109,14 +109,17 @@ internal static class Inputs {
                 throw new InvalidDataException($"game profile {path}: inline array {t.Name} has no valid length");
             inlineArrays[t.Name] = new(count, Text(t.Value.GetProperty("element"), path));
         }
-        // The declared types of the game's members (format 7, D2): a key or value of another form is an entry the
+        // The declared types of the game's members (format 7, D2) and of their methods' parameters (format 8, R10;
+        // a parameter the map leaves out is one whose type is not known): a key or value of another form is an entry the
         // check cannot use, so the profile is refused rather than read as typing less (or more) than it says.
         var memberTypes = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
         foreach (var t in doc.RootElement.GetProperty("memberTypes").EnumerateObject()) {
             var of = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var m in t.Value.EnumerateObject()) {
                 var value = Text(m.Value, path);
-                if (MemberTypes.ParseKey(m.Name) == null || (value != MemberTypes.Unknown && MemberTypes.Decode(value) == null))
+                bool parameter = MemberTypes.IsParameterKey(m.Name);
+                if ((MemberTypes.ParseKey(m.Name) == null && !parameter)
+                    || (value != MemberTypes.Unknown && MemberTypes.Decode(value) == null && !(parameter && MemberTypes.Position(value) != null)))
                     throw new InvalidDataException($"game profile {path}: member type entry {t.Name} {m.Name} is not valid");
                 of[m.Name] = value;
             }

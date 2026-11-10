@@ -169,6 +169,31 @@ internal sealed class TypeAccess(Policy policy, Boundary boundary, IReadOnlySet<
     }
 
     /// <summary>
+    /// What reflection bounded to <paramref name="type"/> and its derived types reaches (see <see cref="Bounded"/>,
+    /// which the caller has checked). Any type of an assembly ("*") is "game-wide-reflection": the check does not
+    /// know which type, so it cannot list what its members do. A named type is "bounded-reflection". A member
+    /// (<paramref name="member"/>) was looked up by name on that type, which gave what the members of that name can
+    /// do on it and on the game types deriving from it. For a type alone, unless the use only reads or writes a
+    /// field (which runs no code), everything any member of the type, and of the game types deriving from it, can
+    /// do counts: the member used is one of those. A type deriving from it that another mod defines is not
+    /// followed (dependencies on other mods are not, see docs/known-gaps.md).
+    /// </summary>
+    public IEnumerable<(string Cap, string Detail)> BoundedReach(string type, string? assembly, string detail, bool member) {
+        if (type == "*") {
+            yield return ("game-wide-reflection", detail);
+            yield break;
+        }
+        yield return ("bounded-reflection", detail);
+        if (member || FieldAccessOnly(detail)) yield break;
+        foreach (var reached in Reach(type, assembly, null, TypeUse.Reflection, frameworkCaps: false, detail, derived: true))
+            yield return reached;
+    }
+
+    // The walker's evidence for a reflection sink starts with the member called (MethodWalker.Target).
+    static bool FieldAccessOnly(string detail) =>
+        detail.StartsWith("System.Reflection.FieldInfo::GetValue ", StringComparison.Ordinal) || detail.StartsWith("System.Reflection.FieldInfo::SetValue ", StringComparison.Ordinal);
+
+    /// <summary>
     /// Whether a member a Harmony transpiler rewrites is the game's code (see Facts.RewriteTarget), the
     /// only code a rewrite stays deep game access for. A type found by name counts only when no mod type,
     /// framework type, policy rule or trusted library has that name; a type known only up to its derived

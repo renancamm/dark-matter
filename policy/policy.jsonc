@@ -8,7 +8,7 @@
 // produce must appear in exactly one of "broadAccess" (in one of its groups), "labels",
 // "fileAccess.kinds" or "informational".
 {
-  "version": "36",
+  "version": "44",
 
   // Tiers, lowest first. A mod is in the highest tier that applies: Broad access when any reason in
   // "broadAccess" or "broadAccessCombinations" applies, else Limited access when it ships code, else
@@ -190,7 +190,13 @@
       "System.Numerics.Vector::LoadUnsafe", "System.Numerics.Vector::StoreUnsafe", "System.Numerics.Vector::LoadAligned",
       "System.Numerics.Vector::StoreAligned", "System.Numerics.Vector2::LoadUnsafe", "System.Numerics.Vector2::LoadAligned",
       "System.Numerics.Vector3::LoadUnsafe", "System.Numerics.Vector3::LoadAligned", "System.Numerics.Vector4::LoadUnsafe",
-      "System.Numerics.Vector4::LoadAligned"
+      "System.Numerics.Vector4::LoadAligned",
+      // instructions that read or write through an address, copy or fill a block, or take stack
+      // memory, for a transpiler or ILGenerator to emit (v38): what they do in the method made is
+      // not checked as the mod's own instructions are
+      "System.Reflection.Emit.OpCodes::Ldind_", "System.Reflection.Emit.OpCodes::Stind_", "System.Reflection.Emit.OpCodes::Ldobj",
+      "System.Reflection.Emit.OpCodes::Stobj", "System.Reflection.Emit.OpCodes::Cpblk", "System.Reflection.Emit.OpCodes::Initblk",
+      "System.Reflection.Emit.OpCodes::Localloc"
     ],
     "dynamic-load": [
       "System.Reflection.Assembly::Load", "System.Reflection.Assembly::UnsafeLoadFrom",
@@ -279,17 +285,13 @@
       "summary": "Works with the game's code and memory directly, in ways the check can't follow all the way.",
       "reasons": {
         "raw-memory": "Reads or writes memory directly",
-        // Reflection the check traces only to a game or mod type and the types derived from it, or
-        // to any type of a game or mod assembly (see the v10 changelog). Names built at run time on
-        // other types, types from framework enumeration or from an object of an unknown type are
-        // "unresolved-reflection" (system access).
-        "bounded-reflection": "Uses reflection on the game's or its own code that the check cannot fully follow",
-        // A Harmony transpiler: the game method Harmony compiles from the instructions it returns is
-        // not one the check has read. What those instructions name is traced (an untraced operand is
-        // "unresolved-reflection", OpCodes.Calli native code), but not what the game's own
-        // instructions do once rearranged (see the v11 changelog). Bounded to the game's code only: a
-        // transpiler on any other target is "rewrite-outside-game" (system access, v12).
-        "code-rewrite": "Rewrites the game's code with a Harmony transpiler, which the check cannot follow instruction by instruction",
+        // Reflection the check traces only to any type of a game or mod assembly (a type found there
+        // by a name built at run time): it does not know which type, so it cannot list what its
+        // members do. Reflection traced to a game or mod type and the types derived from it is the
+        // label "bounded-reflection" since v38. Names built at run time on other types, types from
+        // framework enumeration or from an object of an unknown type are "unresolved-reflection"
+        // (system access).
+        "game-wide-reflection": "Uses reflection on a game type chosen at run time, which the check cannot follow",
         // XmlSerializer runs the parameterless constructors and the setters of the types it fills
         // (and generates the code that does it, which is the framework's own); which types those are
         // is not followed. Its type is chosen in the mod's code, not by the XML it reads.
@@ -355,23 +357,36 @@
   // mod.toml, *.deps.json and the game's mod manifest from the mod and game folders. A
   // mod that connects to the internet and writes there can install code
   // for the next launch without loading any itself. The check does not follow what is written,
-  // so the pair counts, not proof that downloaded bytes reach the write. A write outside the
+  // so the pair counts, not proof that downloaded bytes reach the write. Only a write that can put
+  // content into a file counts (v41): making a folder or deleting something installs nothing. A write outside the
   // game counts too: its path was not traced to the game's folders, which does not show it
   // avoids them (a path built at run time, or a Documents path whose folder names are obfuscated).
   // An embedded binary the check recognizes is Broad access on its own; one it cannot recognize
   // (compressed with deflate or brotli, or encrypted) must be read from the resource and written
   // out, so reading its own resources and writing such files is Broad access too.
   "broadAccessCombinations": [
-    { "id": "network-code-write", "group": "system-access", "text": "Connects to the internet and changes files where the game loads code from", "caps": ["network", "file-write-code"] },
-    { "id": "network-other-write", "group": "system-access", "text": "Connects to the internet and changes files the check cannot place outside the game's code folders", "caps": ["network", "file-write-outside"] },
-    { "id": "resource-code-write", "group": "not-fully-checked", "text": "Writes out its own embedded data where the game loads code from", "caps": ["resource-read", "file-write-code"] },
-    { "id": "resource-other-write", "group": "not-fully-checked", "text": "Writes out its own embedded data to places the check cannot place outside the game's code folders", "caps": ["resource-read", "file-write-outside"] }
+    { "id": "network-code-write", "group": "system-access", "text": "Connects to the internet and changes files where the game loads code from", "caps": ["network", "file-content-code"] },
+    { "id": "network-other-write", "group": "system-access", "text": "Connects to the internet and changes files the check cannot place outside the game's code folders", "caps": ["network", "file-content-outside"] },
+    { "id": "resource-code-write", "group": "not-fully-checked", "text": "Writes out its own embedded data where the game loads code from", "caps": ["resource-read", "file-content-code"] },
+    { "id": "resource-other-write", "group": "not-fully-checked", "text": "Writes out its own embedded data to places the check cannot place outside the game's code folders", "caps": ["resource-read", "file-content-outside"] }
   ],
 
   // Labels, in display order. A label applies when the mod has any listed capability. The id is
   // what results are keyed by (stable across rewordings of the text); ids are unique.
   "labels": [
     { "id": "game-changes", "text": "Changes how the game works", "caps": ["code-patching"] },
+    // A Harmony transpiler on the game's code (v38; a Broad-access reason from v11 to v37). The method
+    // Harmony compiles is the game method's own instructions and the ones the transpiler makes. What
+    // the new instructions name is traced (an untraced operand is "unresolved-reflection", OpCodes.Calli
+    // native code, a memory opcode raw memory), and the game method counts with everything it can do,
+    // exempted or not (see TypeAccess.RewriteExempted). The runtime does not verify the result
+    // (docs/known-gaps.md). A transpiler on any other target is "rewrite-outside-game" (system access, v12).
+    { "id": "game-code-rewrite", "text": "Rewrites parts of the game's code", "caps": ["code-rewrite"] },
+    // Reflection the check traces to a game or mod type and the types derived from it, without
+    // knowing which member (v38; a Broad-access reason from v10 to v37): unless it only reads or
+    // writes a field, the mod also gets everything any member of that type and of the game types
+    // deriving from it can do.
+    { "id": "game-internals", "text": "Uses the game's internals by reflection", "caps": ["bounded-reflection"] },
     { "id": "internet", "text": "Connects to the internet", "caps": ["network"] },
     { "id": "game-saves", "text": "Changes game saves", "caps": ["file-saves"] },
     { "id": "game-folder-writes", "text": "Changes files in its own or the game's folders", "caps": ["file-write-code"] },
@@ -591,7 +606,11 @@
 
   // Recorded and reported in --facts output; no label, no effect on the tier.
   // "unsafe-code": the assembly is compiled with unsafe code enabled (the flag alone, see v27).
-  "informational": ["user-folders", "crypto", "compression", "threads", "environment-process", "reflection", "resource-read", "unsafe-code"],
+  // "file-content-code" and "file-content-outside" are the writes that can put content into a file (every
+  // write but making a folder and deleting, v41): they are what "broadAccessCombinations" counts; the label
+  // comes from "file-write-code" and "file-write-outside" as before.
+  "informational": ["user-folders", "crypto", "compression", "threads", "environment-process", "reflection", "resource-read", "unsafe-code",
+    "file-content-code", "file-content-outside"],
 
   // File access is labelled by where each path comes from. The path operand of each file
   // operation is traced through the values it is built from: the sources below, literals, the
@@ -723,16 +742,16 @@
       // (CodeInstruction, CodeMatcher, Transpilers) are not exempt, so a mod using them is code-rewrite.
       // What a mod's transpiler rewrites is placed at the mod ("rewrite-outside-game" is exempt here:
       // inside, Harmony adds the transpilers it is given to originals it is given).
-      { "library": "0Harmony", "member": "HarmonyLib.Harmony::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.PatchClassProcessor::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.PatchProcessor::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.ReversePatcher::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "a reverse patch copies a traced original into a mod stub (a reflection sink at the mod)" },
-      { "library": "0Harmony", "member": "HarmonyLib.HarmonyMethod::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "wraps a patch method; its target must be traced at the mod (reflection sink)" },
+      { "library": "0Harmony", "member": "HarmonyLib.Harmony::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.PatchClassProcessor::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.PatchProcessor::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "patching is Harmony's job; targets and patch methods are checked at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.ReversePatcher::", "atCall": true, "caps": ["code-generation", "code-rewrite", "rewrite-outside-game", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "a reverse patch copies a traced original into a mod stub (a reflection sink at the mod)" },
+      { "library": "0Harmony", "member": "HarmonyLib.HarmonyMethod::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "wraps a patch method; its target must be traced at the mod (reflection sink)" },
       // Harmony's patch attributes: their constructors only store the target (the (typeName,
       // methodName) form looks the type up with AccessTools.TypeByName). The check decodes the
       // target from the attribute's value at the mod instead.
-      { "library": "0Harmony", "member": "HarmonyLib.HarmonyPatch::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
-      { "library": "0Harmony", "member": "HarmonyLib.HarmonyDelegate::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.HarmonyPatch::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
+      { "library": "0Harmony", "member": "HarmonyLib.HarmonyDelegate::", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "attribute constructor stores the target; decoded from the attribute value at the mod" },
       // Harmony's reflection helpers. Their lookups and sinks are modelled at the mod (constant
       // names, "Type:Member" strings, traced targets for FieldRefAccess, MethodDelegate,
       // CreateInstance, MakeDeepCopy, GetDefaultValue, Traverse; plural lookups and enumerations
@@ -750,8 +769,8 @@
           "HarmonyLib.AccessTools::GetDeclared", "HarmonyLib.AccessTools::GetMethodNames", "HarmonyLib.AccessTools::GetFieldNames",
           "HarmonyLib.AccessTools::GetPropertyNames", "HarmonyLib.AccessTools::AllTypes", "HarmonyLib.AccessTools::AllAssemblies",
           "HarmonyLib.AccessTools::GetTypesFromAssembly", "HarmonyLib.AccessTools::GetTypes"
-        ], "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "reflection helpers modelled at the mod's call" },
-      { "library": "0Harmony", "member": "HarmonyLib.Traverse", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "unclassified-reference"], "reason": "reflection helper modelled at the mod's call" },
+        ], "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "reflection helpers modelled at the mod's call" },
+      { "library": "0Harmony", "member": "HarmonyLib.Traverse", "atCall": true, "caps": ["code-generation", "code-rewrite", "raw-memory", "native-code", "dynamic-load", "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "unclassified-reference"], "reason": "reflection helper modelled at the mod's call" },
       // Harmony's members that store the operand of an instruction they are given (a CodeMatch is an
       // instruction too). The operand is a reflection sink at the mod's call, and writes through
       // CodeMatcher.Operand (a reference to it) are checked there; the transpiler helpers that look a

@@ -63,8 +63,9 @@ internal sealed partial class AssemblyWalker {
 
     public AssemblyWalker(Policy policy, Allowlist allow, IReadOnlyDictionary<string, string[]> gameApi, IReadOnlySet<string> framework,
         IReadOnlySet<string>? game, PEReader pe, AssemblyFacts facts, IReadOnlyDictionary<string, InlineArrayShape>? gameInlineArrays = null,
-        GameTypes? gameTypes = null) {
+        GameTypes? gameTypes = null, bool explain = false) {
         Policy = policy;
+        Explain = explain;
         GameApi = gameApi;
         this.gameInlineArrays = gameInlineArrays ?? new Dictionary<string, InlineArrayShape>();
         this.gameTypes = gameTypes;
@@ -78,6 +79,9 @@ internal sealed partial class AssemblyWalker {
     }
 
     public Policy Policy { get; }
+
+    /// <summary>Whether method walkers note what produced each value they do not follow (see <see cref="Slot.Why"/>), for the facts output.</summary>
+    public bool Explain { get; }
     public IReadOnlyDictionary<string, string[]> GameApi { get; }
     // The game's [InlineArray] types, from the game-API map (see HelperCallProblem).
     readonly IReadOnlyDictionary<string, InlineArrayShape> gameInlineArrays;
@@ -749,6 +753,33 @@ internal sealed partial class AssemblyWalker {
     }
 
     public static bool IsPointer(string typeName) => typeName.Contains('*', StringComparison.Ordinal);
+
+    /// <summary>
+    /// A pointer to one named type ("Namespace.Type*", also a pointer to such a pointer): the only pointers the
+    /// walker follows from the game call that returned them (see <see cref="Tag.GamePointer"/>). Not void*
+    /// (it names no type to match), a function pointer, a pointer to a generic type or parameter (the
+    /// signature names do not carry type arguments), or a reference to or an array of pointers.
+    /// </summary>
+    public static bool IsPlainPointer(string typeName) => typeName.EndsWith('*') && !typeName.StartsWith("System.Void*", StringComparison.Ordinal)
+        && !typeName.StartsWith("method", StringComparison.Ordinal) && typeName.IndexOfAny(['`', '!', '&', '[']) < 0;
+
+    /// <summary>
+    /// Whether the pointers in a method's signature are checked where they are used, so the signature itself is
+    /// not raw memory (policy 39): the method has an IL body, and every pointer type in its signature is a plain
+    /// one. Each call to it in the mod must then pass pointers the game returned (see MethodWalker.Call), its
+    /// pointer arguments are such pointers in its body, and a pointer it returns must be one.
+    /// </summary>
+    public static bool PointersChecked(MethodDefinition m, MethodSignature<string> sig) =>
+        m.RelativeVirtualAddress != 0 && (m.ImplAttributes & MethodImplAttributes.CodeTypeMask) == MethodImplAttributes.IL
+        && m.GetImport().Module.IsNil
+        && sig.ParameterTypes.Append(sig.ReturnType).Where(IsPointer).All(IsPlainPointer);
+
+    /// <summary>The same for a method of this assembly named by a call (false for anything else).</summary>
+    public bool PointersChecked(EntityHandle h) {
+        if (h.Kind != HandleKind.MethodDefinition) return false;
+        var m = Metadata.GetMethodDefinition((MethodDefinitionHandle)h);
+        try { return PointersChecked(m, m.DecodeSignature(SignatureNames.Instance, null)); } catch (BadImageFormatException) { return false; }
+    }
 
     public bool IsCompilerHelper(MethodDefinitionHandle h) => helpers.Contains(h);
 
@@ -1453,6 +1484,7 @@ internal sealed partial class AssemblyWalker {
         var paths = new HashSet<int>();
         var reflection = new HashSet<int>();
         var declared = new List<DeclaredType?>();
+        var objects = new HashSet<int>();
         int self = sig.Header.IsInstance ? 1 : 0;
         if (self == 1) {
             var baseType = md.GetTypeDefinition(m.GetDeclaringType()).BaseType;
@@ -1466,12 +1498,21 @@ internal sealed partial class AssemblyWalker {
             if (sig.ParameterTypes[i].EndsWith('&')) byref.Add(i + self);
             if (PathAtoms.IsPathType(sig.ParameterTypes[i])) paths.Add(i + self);
             if (ReflectionApis.IsReflectionType(sig.ParameterTypes[i])) reflection.Add(i + self);
+            if (sig.ParameterTypes[i] == "System.Object") objects.Add(i + self);
             declared.Add(i < shapes.Length ? Declared(shapes[i]) : null);
         }
+        var pointers = new Dictionary<int, string>();
+        bool pointersChecked = PointersChecked(m, sig);
+        if (pointersChecked)
+            for (int i = 0; i < sig.ParameterTypes.Length; i++)
+                if (IsPointer(sig.ParameterTypes[i])) pointers[i + self] = sig.ParameterTypes[i];
         return new(byref, paths, sig.ReturnType.EndsWith('&'), PathAtoms.IsPathType(sig.ReturnType)) {
+            PointerArgs = pointers,
+            PointerReturn = pointersChecked && IsPointer(sig.ReturnType) ? sig.ReturnType : null,
             ReflectionArgs = reflection,
             ReflectionReturn = ReflectionApis.IsReflectionType(sig.ReturnType),
             ArgTypes = declared,
+            ObjectArgs = objects,
         };
     }
 
@@ -1620,7 +1661,23 @@ internal sealed partial class AssemblyWalker {
         }
         foreach (var mh in t.GetMethods()) {
             var m = md.GetMethodDefinition(mh);
-            MemberTypes.Add(into, owner, MemberTypes.Key(MemberKind.Method, md.GetString(m.Name)), Of(() => m.DecodeSignature(TypeShapes.Instance, null).ReturnType));
+            var method = md.GetString(m.Name);
+            MemberTypes.Add(into, owner, MemberTypes.Key(MemberKind.Method, method), Of(() => m.DecodeSignature(TypeShapes.Instance, null).ReturnType));
+            // Its parameters, by index and by name (R10): what Harmony passes a patch method for each. A signature
+            // that cannot be decoded leaves the method's own entry unknown and its parameters out (unknown too).
+            ImmutableArray<TypeShape> ps;
+            try { ps = m.DecodeSignature(TypeShapes.Instance, null).ParameterTypes; } catch (BadImageFormatException) { continue; }
+            for (int i = 0; i < ps.Length; i++) {
+                var shape = ps[i];
+                MemberTypes.Add(into, owner, MemberTypes.ParameterKey(method, PatchParameter.Index(i)), Of(() => shape));
+            }
+            foreach (var ph in m.GetParameters()) {
+                var p = md.GetParameter(ph);
+                if (p.SequenceNumber < 1 || p.SequenceNumber > ps.Length) continue;
+                var shape = ps[p.SequenceNumber - 1];
+                MemberTypes.Add(into, owner, MemberTypes.ParameterKey(method, md.GetString(p.Name)), Of(() => shape));
+                MemberTypes.Add(into, owner, MemberTypes.ParameterPositionKey(method, md.GetString(p.Name)), PatchParameter.Index(p.SequenceNumber - 1));
+            }
         }
     }
 
@@ -1680,6 +1737,50 @@ internal sealed partial class AssemblyWalker {
         return new(kind, vt, va);
     }
 
+    /// <summary>
+    /// What a lookup by the constant name <paramref name="name"/> finds on exactly <paramref name="type"/>: its
+    /// declared type when that is known (<see cref="MemberValueOf"/>), and for a method whether the type alone declares
+    /// it (<see cref="SoleMethod"/>). Null when neither is known.
+    /// </summary>
+    public MemberValue? MemberOf(string type, string? assembly, MemberKind kind, string name) {
+        var typed = MemberValueOf(type, assembly, kind, name);
+        var sole = kind == MemberKind.Method ? SoleMethod(type, assembly, name) : null;
+        return typed is { } v ? v with { Sole = sole } : sole != null ? new(kind, "", "", sole) : null;
+    }
+
+    /// <summary>
+    /// The declared name of the methods a lookup by the constant name <paramref name="name"/> finds on exactly
+    /// <paramref name="type"/>, when the type itself declares them and no base type declares a method the name can
+    /// find (in any casing, as <c>ReflectionApis.MemberMatches</c>): whichever overload is found then runs only on
+    /// instances of the type or of a type derived from it (R3). Null otherwise: a name a base type has (an override,
+    /// an inherited method), a constructor, a method of the root types, a prefix, a type that is not this assembly's
+    /// or the game's, or a base chain the check cannot follow to System.Object or System.ValueType.
+    /// </summary>
+    public string? SoleMethod(string type, string? assembly, string name) {
+        if (name.Length == 0 || name.Contains('*', StringComparison.Ordinal) || name == ".cctor" || RootMethods.Contains(name)) return null;
+        string? declared = null;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        string? t = type, a = assembly;
+        for (int depth = 0; ; depth++) {
+            if (t == null && depth > 0) break;  // no base type (an interface)
+            if (t == null || depth > 64 || !seen.Add(t)) return null;
+            if (depth > 0 && RootTypes.Contains(t) && (a == null || IsFrameworkAssembly(a))) break;
+            if (TypeMembers(t, a) is not var (members, b, ba)) return null;
+            foreach (var key in members.Keys) {
+                if (MemberTypes.ParseKey(key) is not var (k, n) || k != MemberKind.Method || !ReflectionApis.MemberMatches(name, n)) continue;
+                // A base type's method of that name is the one found when the type does not hide it, and runs on
+                // instances of other types; two spellings on the type itself are two methods.
+                if (depth > 0 || (declared != null && declared != n)) return null;
+                declared = n;
+            }
+            if (depth == 0 && declared == null) return null;
+            // As in MemberValueOf: a base type neither this assembly nor the game-API map lists ends the chain unknown.
+            if (b != null && !RootTypes.Contains(b) && (gameTypes == null || !gameTypes.Members.ContainsKey(b)) && ba == null) return null;
+            (t, a) = (b, ba);
+        }
+        return declared;
+    }
+
     // ── the instance a Harmony patch method is given (D7) ───────────────────────────────
 
     /// <summary>
@@ -1693,10 +1794,19 @@ internal sealed partial class AssemblyWalker {
     /// which no base type declares under that name (Harmony patches the method the name finds, and a base type's
     /// is called on instances of other types too). Whether the mod's own code also calls the method, takes it
     /// as a delegate or reaches it by reflection is decided per mod (see FieldProvenance and Nodes.Instance).
+    /// <para>A patch applied by hand (policy 42, R3): Harmony passes the instance to any static method with such a
+    /// parameter that it is given as a prefix, postfix or finalizer, whatever the method is called. One that the
+    /// attributes cannot apply (no patch name or attribute on the method, or no [HarmonyPatch] on the method or its
+    /// classes) gets an empty list here: its instance is bounded per mod by the originals of the <c>Harmony.Patch</c>
+    /// calls that hand it over (see <see cref="ManualPatch"/>), which also add to the types the attributes give.</para>
     /// </summary>
     (int Arg, IReadOnlyList<(string Type, string Asm)>? Types)? PatchInstance(MethodDefinitionHandle mh, MethodDefinition m) {
         var md = Metadata;
-        if (PatchKind(m) is not ("Prefix" or "Postfix" or "Finalizer")) return null;
+        var patchKind = PatchKind(m);
+        if (patchKind is not (null or "Prefix" or "Postfix" or "Finalizer")) return null;  // a transpiler is given no instance
+        // Harmony's own hooks (TargetMethod, Prepare, ...) are not patch methods.
+        if (patchKind == null && (HarmonyMethodNames.Contains(md.GetString(m.Name)) || targetMethods.ContainsKey(mh))) return null;
+        bool byHandOnly = patchKind == null;
         MethodSignature<string> sig;
         try { sig = m.DecodeSignature(new FrameworkTypeNames(this), null); } catch (BadImageFormatException) { return null; }
         if (sig.Header.IsInstance) return null;  // Harmony calls only static patch methods
@@ -1726,11 +1836,14 @@ internal sealed partial class AssemblyWalker {
             if (!seen.Add(ch)) return Unbounded();
             var ct = md.GetTypeDefinition(ch);
             classes.Add(ct);
-            if (Renames(ct.GetCustomAttributes()) || FindAttribute(ct.GetCustomAttributes(), HarmonyPatchAllAttribute) != null) return Unbounded();
+            if (Renames(ct.GetCustomAttributes())) return Unbounded();
+            if (!byHandOnly && FindAttribute(ct.GetCustomAttributes(), HarmonyPatchAllAttribute) != null) return Unbounded();
             // Harmony takes the targets from a TargetMethod(s) instead of the attributes when the class has one.
-            if (ct.GetMethods().Any(targetMethods.ContainsKey)) return Unbounded();
+            if (!byHandOnly && ct.GetMethods().Any(targetMethods.ContainsKey)) return Unbounded();
             c = ct.BaseType;
         }
+        // Not a method the attributes can apply: only a Harmony.Patch call hands it over.
+        if (byHandOnly) return (arg, []);
         // A patch class another class derives from: a version of Harmony that collects inherited patch methods
         // would apply this one to the derived class's targets too, which can be other types.
         var ownerName = Il.TypeName(md, owner);
@@ -1740,6 +1853,8 @@ internal sealed partial class AssemblyWalker {
         var outer = classes.SelectMany(ct => PatchSpecs(ct.GetCustomAttributes(), "", report: false)).ToList();
         if (own.Concat(outer).Any(s => s.Undecoded || s.Delegate) || FindAttribute(m.GetCustomAttributes(), HarmonyPatchAllAttribute) != null
             || FindAttribute(m.GetCustomAttributes(), HarmonyReversePatchAttribute) != null) return Unbounded();
+        // No [HarmonyPatch] on the method or its classes: PatchAll does not use it, so only a Harmony.Patch call can.
+        if (own.Count == 0 && outer.Count == 0) return (arg, []);
         // The parts merged as AddPatchTargets merges them.
         var types = own.Where(s => s.Type != null).ToList() is { Count: > 0 } ot ? ot : outer.Where(s => s.Type != null).ToList();
         var names = own.Select(s => s.Name).OfType<string>().Distinct().ToList() is { Count: > 0 } on ? on : outer.Select(s => s.Name).OfType<string>().Distinct().ToList();
@@ -1761,6 +1876,112 @@ internal sealed partial class AssemblyWalker {
         }
         return (arg, bounds);
     }
+
+    // ── what Harmony passes a patch method's other parameters (R10, policy 43) ───────────
+
+    // Harmony's attributes a patch class or method commonly carries that give no parameter another name.
+    static readonly HashSet<string> InertPatchAttributes = [
+        HarmonyPatchAttribute, "HarmonyLib.HarmonyPatchCategory", "HarmonyLib.HarmonyPriority", "HarmonyLib.HarmonyBefore", "HarmonyLib.HarmonyAfter", "HarmonyLib.HarmonyDebug",
+    ];
+
+    /// <summary>
+    /// For a static method Harmony may be handed as a prefix, postfix or finalizer: what Harmony passes for each of
+    /// its parameters declared as object and passed by value, by argument index (see <see cref="MethodFacts.PatchParameters"/>).
+    /// Harmony fills a patch method's parameters by name: <c>__result</c> is the original's result, <c>__N</c> its
+    /// parameter N, and a plain name its parameter of that name. Listed only where nothing else decides the value:
+    /// <list type="bullet">
+    /// <item>no name Harmony gives another meaning (<c>__instance</c>, <c>__state</c>, <c>___field</c>, any other name
+    /// beginning "__"), and only a plain identifier (Harmony also looks a parameter's name up among its own
+    /// variables, one of which is keyed by a type's assembly-qualified name);</item>
+    /// <item>not the first parameter of a method that returns object (a postfix whose first parameter has its return
+    /// type is given the result there, whatever the parameter is called);</item>
+    /// <item>no attribute that could be a [HarmonyArgument], which gives a parameter another original parameter, on the
+    /// method, any parameter, the class or a base class: only the framework's attributes, the compiler's embedded
+    /// ones (defined here, deriving directly from a framework type) and, on a class or the method, Harmony's own
+    /// patch attributes are let through; a base class outside this assembly ends it.</item>
+    /// </list>
+    /// Which original the parameter comes from is decided per mod, from the <c>Harmony.Patch</c> calls that hand the
+    /// method over (see FieldProvenance). A method the attributes apply is called from outside and gets nothing here.
+    /// <para>Also what a patch method can replace through its by-reference parameters (see
+    /// <see cref="MethodFacts.PatchReplaces"/>): Harmony hands such a parameter the address of the original's
+    /// argument, instance or result without comparing types, so a value stored there need not be of the type the
+    /// original declares, and every later patch method is passed it.</para>
+    /// </summary>
+    (Dictionary<int, string> Passed, List<string> Replaced) PatchParameters(MethodDefinition m) {
+        var md = Metadata;
+        var passed = new Dictionary<int, string>();
+        var replaced = new List<string>();
+        MethodSignature<string> sig;
+        try { sig = m.DecodeSignature(new FrameworkTypeNames(this), null); } catch (BadImageFormatException) { return (passed, [PatchParameter.Any]); }
+        if (sig.Header.IsInstance || sig.GenericParameterCount > 0) return (passed, replaced);
+        // An attribute that cannot be a [HarmonyArgument] (or derive from it).
+        bool Inert(CustomAttribute a, bool onParameter) {
+            if (FrameworkAttribute(a)) return true;
+            var type = AttributeTypeName(a);
+            if (a.Constructor.Kind == HandleKind.MethodDefinition) {
+                var baseType = md.GetTypeDefinition(md.GetMethodDefinition((MethodDefinitionHandle)a.Constructor).GetDeclaringType()).BaseType;
+                return !type.StartsWith("HarmonyLib.", StringComparison.Ordinal) && !baseType.IsNil && FrameworkType(baseType);
+            }
+            return !onParameter && InertPatchAttributes.Contains(type) && string.Equals(ExternalAssemblyOf(a.Constructor), HarmonyAssembly, StringComparison.OrdinalIgnoreCase);
+        }
+        bool AllInert(CustomAttributeHandleCollection attrs, bool onParameter = false) => attrs.All(ah => Inert(md.GetCustomAttribute(ah), onParameter));
+        bool named = AllInert(m.GetCustomAttributes());  // whether the parameters' own names decide what Harmony passes
+        var names = new Dictionary<int, List<string>>();
+        foreach (var ph in m.GetParameters()) {
+            var p = md.GetParameter(ph);
+            named &= AllInert(p.GetCustomAttributes(), onParameter: true);
+            if (!names.TryGetValue(p.SequenceNumber, out var list)) names[p.SequenceNumber] = list = [];
+            list.Add(md.GetString(p.Name));
+        }
+        var seen = new HashSet<TypeDefinitionHandle>();
+        for (EntityHandle c = m.GetDeclaringType(); named;) {
+            // (No base type: <Module>, whose methods are no patch class's.)
+            if (c.IsNil || c.Kind != HandleKind.TypeDefinition) {
+                named = !c.IsNil && Il.TypeName(md, c) is "System.Object" && FrameworkType(c);
+                break;
+            }
+            if (!seen.Add((TypeDefinitionHandle)c)) { named = false; break; }
+            var ct = md.GetTypeDefinition((TypeDefinitionHandle)c);
+            named = AllInert(ct.GetCustomAttributes());
+            c = ct.BaseType;
+        }
+        for (int i = 0; i < sig.ParameterTypes.Length; i++) {
+            var type = sig.ParameterTypes[i];
+            bool byRef = type.EndsWith('&');
+            if (!byRef && type != "System.Object") continue;
+            // (Two Param rows for one parameter: which name the runtime reports is not decided here.)
+            var name = names.TryGetValue(i + 1, out var given) && given.Count == 1 ? given[0] : null;
+            if (byRef) {
+                // What a patch method can replace through this parameter. A name the check cannot read, or one an
+                // attribute can change, may be any of the original's arguments. Harmony requires the original's result
+                // to be assignable to __result's type: a primitive there is the result's own type, which no typed result
+                // is. Any other name beginning "__" is Harmony's own (the patch's state, a field of the instance, a variable).
+                var code = name == null || !named ? PatchParameter.Any
+                    : name == "__instance" ? PatchParameter.Instance
+                    : name == "__result" ? (PrimitiveNames.Contains(type[..^1]) ? null : PatchParameter.Result)
+                    : !name.StartsWith("__", StringComparison.Ordinal) ? PatchParameter.Name(name)
+                    : name.Length > 2 && name[2..].All(char.IsAsciiDigit)
+                        ? (name.Length <= 6 ? PatchParameter.Index(int.Parse(name[2..], NumberStyles.None, CultureInfo.InvariantCulture)) : PatchParameter.Any)
+                    : null;
+                if (code != null) replaced.Add(code);
+                continue;
+            }
+            if (!named || name == null || (i == 0 && sig.ReturnType == "System.Object")) continue;
+            if (name == "__result") passed[i] = PatchParameter.Result;
+            else if (name.StartsWith("__", StringComparison.Ordinal)) {
+                var digits = name[2..];
+                if (digits.Length is >= 1 and <= 4 && digits.All(char.IsAsciiDigit)) passed[i] = PatchParameter.Index(int.Parse(digits, NumberStyles.None, CultureInfo.InvariantCulture));
+            } else if (name.Length > 0 && name.All(ch => char.IsLetterOrDigit(ch) || ch == '_'))
+                passed[i] = PatchParameter.Name(name);
+        }
+        return (passed, replaced);
+    }
+
+    // The primitive types as signatures name them (always the runtime's, see FrameworkTypeNames).
+    static readonly HashSet<string> PrimitiveNames = [
+        "System.Boolean", "System.Char", "System.SByte", "System.Byte", "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
+        "System.Int64", "System.UInt64", "System.Single", "System.Double", "System.IntPtr", "System.UIntPtr", "System.String",
+    ];
 
     // Whether the type (this assembly's or the game's) declares a method of exactly that name (as Harmony's
     // AccessTools looks it up, without ignoring case) and none of its base types does, up to System.Object.
@@ -2114,7 +2335,8 @@ internal sealed partial class AssemblyWalker {
         }
         try {
             var sig = m.DecodeSignature(SignatureNames.Instance, null);
-            if (IsPointer(sig.ReturnType) || sig.ParameterTypes.Any(IsPointer))
+            // (A method whose pointers are checked where they are used is not raw memory for its signature, see PointersChecked.)
+            if ((IsPointer(sig.ReturnType) || sig.ParameterTypes.Any(IsPointer)) && !PointersChecked(m, sig))
                 mf.Caps.Add(new("raw-memory", $"pointer parameter or return type in {name}", Origin.Structure));
             // A method Harmony would use as a transpiler rewrites the code it patches, whether or not it
             // touches a CodeInstruction member (it can reorder or drop the instructions with LINQ alone).
@@ -2127,6 +2349,7 @@ internal sealed partial class AssemblyWalker {
             else if (m.RelativeVirtualAddress != 0) {
                 var shape = Shape(m, sig);
                 if (PatchInstance(mh, m) is var (arg, types)) shape = shape with { InstanceArg = arg, InstanceTypes = types };
+                (mf.PatchParameters, mf.PatchReplaces) = PatchParameters(m);
                 new MethodWalker(this, mf, helpers.Contains(mh), shape, TargetMethodOf(mh)).Walk(pe.GetMethodBody(m.RelativeVirtualAddress));
             } else if (!IsBodilessByDesign(m))
                 // An extern method that is neither P/Invoke nor runtime-provided: an

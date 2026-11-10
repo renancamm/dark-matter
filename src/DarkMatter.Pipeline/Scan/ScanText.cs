@@ -33,6 +33,8 @@ internal static class ScanText {
             var allow = stamp["allowlist"] as JsonObject;
             w.AppendLine(CultureInfo.InvariantCulture, $"  stamp: {P(Str(stamp, "tool"))}, policy {P(Str(policy, "version"))} ({Short(Str(policy, "sha256"))}), "
                 + $"game {P(Str(game, "folder"))} ({Short(Str(game, "sha256"))}), {allow?["files"]} trusted files, key {Short(Str(stamp, "key"))}");
+            if (game?["others"] is JsonArray others && others.Count > 0)
+                w.AppendLine(CultureInfo.InvariantCulture, $"  other game builds: {string.Join(", ", others.Select(x => P(Str(x as JsonObject, "folder"))))}");
         }
         if (summary != null) {
             w.AppendLine(CultureInfo.InvariantCulture, $"  {summary["listings"]} listings: {summary["scanned"]} scanned, {summary["cached"]} unchanged since the last scan, "
@@ -87,12 +89,13 @@ internal static class ScanText {
         var release = r["release"] as JsonObject;
         var title = release != null ? $"{P(Str(r, "id"))} {P(Str(release, "version"))}" : P(Str(r, "id"));
         var name = Str(r, "name");
-        w.AppendLine($"### {title}: {P(v.TierName)}" + (name != null && name != Str(r, "id") ? $"  ({P(name)})" : ""));
+        w.AppendLine($"### {title}: {P(v.TierName)}" + (v.TierNote is { } note ? $" ({P(note)})" : "") + (name != null && name != Str(r, "id") ? $"  ({P(name)})" : ""));
         if (release != null) {
             w.AppendLine($"  release sha256 {P(Str(release, "sha256"))}" + (Str(release, "loader") is { } loader ? $", loader {P(loader)}" : "")
                 + (Str(release, "status") is { } st && st != "stable" ? $", {P(st)}" : ""));
         }
         w.AppendLine(CultureInfo.InvariantCulture, $"  {P(v.TierSummary)}");
+        Dependencies(w, v);
         if (v.Tier == "no-code") return;
         if (v.Groups.Count > 0) w.AppendLine(CultureInfo.InvariantCulture, $"  Why: {string.Join(" · ", v.Groups.Select(g => P(g.Name)))}");
         w.AppendLine(v.Tier == "limited-access" ? "  Can do:" : "  Can do (not a complete list):");
@@ -104,6 +107,14 @@ internal static class ScanText {
         }
         foreach (var warning in v.Warnings) w.AppendLine(CultureInfo.InvariantCulture, $"  warning: {P(warning)}");
         if (v.Trusted.Count > 0) w.AppendLine(CultureInfo.InvariantCulture, $"  Trusted libraries (by hash; their profiles apply): {string.Join(", ", v.Trusted.Select(P))}");
+    }
+
+    // What the mod requires: each dependency with the tier of its own result. A note: it does not change this mod's tier.
+    static void Dependencies(StringBuilder w, ResultView v) {
+        foreach (var d in v.Dependencies) {
+            var state = d.Scanned ? "" : $": {P(d.Reason ?? "no result")}";
+            w.AppendLine(CultureInfo.InvariantCulture, $"  Requires {P(d.Id)}{(d.Version != null ? " " + P(d.Version) : "")}{(d.Through != null ? $" (through {P(d.Through)})" : "")}: {P(d.TierName)}{state}");
+        }
     }
 
     static string Tier(JsonObject r) => r["result"] is JsonObject ? ResultView.From(r["result"]).TierName : "?";

@@ -13,6 +13,7 @@ namespace HarmonyLib {
         public string methodName;
         public MethodType? methodType;
         public Type[] argumentTypes;
+        public int priority = -1;
         public HarmonyMethod() { }
         public HarmonyMethod(MethodInfo method) { this.method = method; }
         public HarmonyMethod(Type methodType, string methodName, Type[] argumentTypes = null) { declaringType = methodType; this.methodName = methodName; this.argumentTypes = argumentTypes; }

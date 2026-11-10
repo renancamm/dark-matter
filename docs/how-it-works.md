@@ -72,9 +72,11 @@ decision is then made from that one model, using the rules in
    compiled expression tree built only from traced members (parameters, constants, conversions,
    calls, member access, constructors, assignments, blocks, lambdas) runs only those members and
    is not code generation. A member of the run-time type of an object of a declared game or mod
-   type, and a type of a game or mod assembly found by a name built at run time, are bounded:
-   deep game access, not system access. A lookup on such a run-time type also reaches the same
+   type is bounded: the label "Uses the game's internals by reflection" (policy 38), not system
+   access. A type of a game or mod assembly found by a name built at run time is deep game access. A lookup on such a run-time type also reaches the same
    members of every game type deriving from the declared one, by base type or interface (policy 35).
+   A value read by reflection and kept in a local declared as `object` is followed across a
+   branch (policy 40), so the null-conditional form `value?.GetType().GetMethod(...)` is traced.
    **Typed reads (policy 35).** A field, property or method found by a constant name on exactly a
    resolved type (not on a run-time type) carries its declared type when every member of that kind the
    name can find there and on the base types, in any casing, is declared as the same class or struct of
@@ -86,8 +88,19 @@ decision is then made from that one model, using the rules in
    `object` gets an instance of the patched type or one derived from it, when its attributes name that
    type by `typeof` and the type alone declares the patched method, the class has no `TargetMethod(s)`,
    `[HarmonyPatchAll]` or `[HarmonyArgument]`, and the mod's own code does not call the patch method,
-   take it as a delegate, reach it by reflection (`new HarmonyMethod(type, name)` included) or store into
-   the parameter. Anything else stays untraced. Tracking resets at every branch target and exception handler,
+   take it as a delegate, reach it by reflection or store into the parameter. A patch applied in code
+   (policy 42) bounds it the same way: `harmony.Patch(original, postfix: new HarmonyMethod(typeof(X),
+   "Name"))`, with the HarmonyMethod made inside that call and the original a method found by a constant
+   name on one type, which that type alone declares. A HarmonyMethod kept anywhere else is a lookup like
+   any other, which reaches the patch method by reflection. The HarmonyMethod may wait in a local that
+   holds nothing else and is loaded only into that call (policy 44). Harmony fills such a patch method's
+   other parameters by name, so one declared as `object` and named `__result`, `__N` or like a parameter
+   of the original is an object of the type the original declares there (policy 43), when every overload
+   agrees on it and no attribute can rename it. Neither bound holds when a method of the mod that Harmony
+   may call takes the same value by reference, because Harmony does not compare the types (policy 44). A parameter declared as `object` of a method
+   that nothing outside the mod can call (not public on a visible type, not virtual, not a patch method,
+   not used as a delegate or reached by reflection) holds what the mod's calls pass (policy 42): an object
+   of the type each argument is declared as, or of a type derived from it. Anything else stays untraced. Tracking resets at every branch target and exception handler,
    except that a local's type or member is traced from all its stores (and when they differ, as
    one of them).
 4. **Libraries by hash, not by name.** A file is trusted only if its SHA-256 is on the
@@ -141,9 +154,10 @@ decision is then made from that one model, using the rules in
    target gets its library profile; a target anywhere else is code that was not analyzed.
    Patches on game members otherwise only add "Changes how the game works", and a patch class
    whose patch methods can only observe its target passes nothing of a game or trusted-library
-   target on. Transpilers on the game's code are deep game access ("Rewrites the game's code ..."), not
-   code generation: `OpCodes` and `Label` values are data, and what an instruction refers to is a
-   reflection sink. A transpiler on any other target, or on one the check cannot place, is Broad
+   target on. A pointer a game member returns is followed while it is only passed on and read
+   through (policy 39, see [Tiers and labels](tiers-and-labels.md)). Transpilers on the game's code are the label "Rewrites parts of the game's code"
+   (policy 38), not code generation: `OpCodes` and `Label` values are data (except `Calli`, native
+   code, and the memory opcodes, raw memory), and what an instruction refers to is a reflection sink. A transpiler on any other target, or on one the check cannot place, is Broad
    access ("Rewrites code other than the game's ...", policy 12).
    The framework and Harmony semantics the check models by name (reflection lookups and sinks,
    collections and LINQ, name filters, path sources and combiners, interpolated strings,
@@ -179,12 +193,15 @@ decision is then made from that one model, using the rules in
    own version), with reasons. The map holds the game's assembly names (the .NET runtime the
    game ships is skipped), type, method and field names, capability tags and one example each,
    and (format 7, policy 35) the declared type of every field, property and method's return, and the
-   interfaces of each type, for typed reflection reads and derived types (see 3).
+   interfaces of each type, for typed reflection reads and derived types (see 3). Format 8 (policy 43)
+   adds the declared type of each method's parameters where it is a class or struct, by name and by index,
+   and the index of each of those names.
    A game method missing from the map was read and reaches nothing the policy counts. What was not
    read never reads that way (policy 21): a game method whose body cannot be decoded, and every game
    method that can reach it, is "not analyzed"; a call into a game assembly to a member neither the
    type named nor its base types define (one a mod's other game build has) is not analyzed either
-   (one a base type defines is that member, policy 22); a game file
+   (one a base type defines is that member, policy 22), unless another game build given to the
+   check defines it: the call then reaches what that build's map lists (policy 37); a game file
    that cannot be read is listed as skipped and is not a game assembly, so calls into it are not
    analyzed (the pipeline does not keep such a profile and scans its results again next run).
 11. **Fail closed.** Undecodable IL, unreadable files, unextractable archives and files whose

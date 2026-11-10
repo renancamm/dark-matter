@@ -30,6 +30,9 @@ internal sealed class Policy {
     /// <summary>Capabilities the analyzer produces itself rather than from a rule.</summary>
     public static readonly IReadOnlyList<string> Derived = [
         "shell-open", "shell-open-folder", "file-saves", "file-write-outside", "file-read-outside", "file-write-code",
+        // A write that can put content into a file (not one that only makes a folder or deletes): what the
+        // combinations with a download or embedded data count (see Evaluator, policy 41).
+        "file-content-code", "file-content-outside",
         // An XmlSerializer whose type is not fixed where it is made; and what the game's exemption passes
         // on for one, kept at a mod's call only where the mod chooses the type.
         "xml-serialization-open", "xml-serialization-game",
@@ -37,9 +40,9 @@ internal sealed class Policy {
         "unsafe-code",
     ];
 
-    /// <summary>Findings that are not capabilities; each needs an entry in one "broadAccess" group.</summary>
+    /// <summary>Findings that are not capabilities; each needs an entry in one "broadAccess" group, or in one label.</summary>
     public static readonly IReadOnlyList<string> Findings = [
-        "unresolved-reflection", "bounded-reflection", "com-activation", "decode-failure", "unreadable-file",
+        "unresolved-reflection", "bounded-reflection", "game-wide-reflection", "com-activation", "decode-failure", "unreadable-file",
         "native-binary", "unextracted-archive", "not-analyzed", "unclassified-reference", "unanalyzed-call",
         "ships-script", "embedded-binary", "name-collision", "rewrite-outside-game", "missing-game-code",
     ];
@@ -281,8 +284,8 @@ internal sealed class Policy {
             }
         }
         foreach (var f in Findings) {
-            int homes = Groups(f);
-            if (homes != 1) errors.Add($"finding '{f}' must appear in exactly one broadAccess group (found {homes})");
+            int homes = Groups(f) + Labels.Count(l => l.Caps.Contains(f));
+            if (homes != 1) errors.Add($"finding '{f}' must appear in exactly one broadAccess group or label (found {homes})");
         }
         foreach (var name in this.Groups.GroupBy(g => g.Name, StringComparer.Ordinal).Where(g => g.Count() > 1))
             errors.Add($"the broadAccess group name '{name.Key}' is used more than once");
@@ -297,7 +300,7 @@ internal sealed class Policy {
         foreach (var id in Labels.GroupBy(l => l.Id, StringComparer.Ordinal).Where(g => g.Count() > 1)) errors.Add($"the label id '{id.Key}' is used more than once");
         foreach (var text in Labels.GroupBy(l => l.Text, StringComparer.Ordinal).Where(g => g.Count() > 1)) errors.Add($"the label text '{text.Key}' is used more than once");
         foreach (var cap in labelled.Concat(Informational).Concat(FileKinds.Keys))
-            if (!producible.Contains(cap)) errors.Add($"'{cap}' is referenced but no rule produces it");
+            if (!producible.Contains(cap) && !Findings.Contains(cap)) errors.Add($"'{cap}' is referenced but no rule produces it");
         foreach (var c in Combinations) {
             if (RaisesTier(c.Id) || Combinations.Count(x => x.Id == c.Id) > 1) errors.Add($"broadAccessCombinations id '{c.Id}' is not unique");
             if (string.IsNullOrWhiteSpace(c.Text) || BroadAccess.Values.Contains(c.Text) || Combinations.Count(x => x.Text == c.Text) > 1)

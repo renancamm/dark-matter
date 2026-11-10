@@ -4,6 +4,7 @@
     <Project Path="fixtures/classification/unclassified/classification-unclassified.csproj" />
     <Project Path="fixtures/fail-open/corrupt/fail-open-corrupt.csproj" />
     <Project Path="fixtures/download/download.csproj" />
+    <Project Path="fixtures/download-folder/download-folder.csproj" />
     <Project Path="fixtures/embedded/embedded.csproj" />
     <Project Path="fixtures/evasion/evasion.csproj" />
     <Project Path="fixtures/fail-open/fail-open.csproj" />

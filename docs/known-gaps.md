@@ -21,9 +21,44 @@
   `__instance` is declared as `object` gets the patched type's bound only when the mod's own code does not
   call it, take it as a delegate or reach it by reflection. Another mod can still call a public patch
   method with any object, as it can call any public method (see "Another mod can change this mod's
-  reflection fields"); that is not followed. Harmony's other injected parameters (`__result`, `___field`,
-  the original's named arguments, `__args`) are not typed, and a constructor or a method a base type
-  also declares (an override) is not bounded (Harmony may patch the base type's).
+  reflection fields"); that is not followed. A constructor or a method a base type
+  also declares (an override) is not bounded (Harmony may patch the base type's). For a patch applied
+  in code (policy 42) the HarmonyMethod is followed only inside the `Harmony.Patch` call that makes it,
+  or (policy 44) through a local that holds nothing else and is loaded only into that call:
+  one kept in a field, made by a helper, named by a string that is not one constant (`flag ? "A" : "B"`),
+  or added through a `PatchProcessor` is not
+  bounded, which over-reports. Whether a type alone declares the original is read from the game build
+  the scan is stamped with; on a build where a base type declares it, the instance could be of another
+  type. An original that only an older game build declares is not bounded.
+- **A patch method's other parameters are typed from the original's signature (policy 43).** For a patch
+  applied in code, a parameter declared as `object` and named `__result`, `__N` or like one of the
+  original's parameters is an object of the type the original declares there. The check reads that type
+  from the game build the scan is stamped with. Three things are not followed:
+  - Another mod's patch on the same original can take the argument by reference as a different type and
+    store any object there. The check looks for that only in the mod's own methods (policy 44), by the
+    parameter's name or index and not by which original each patch method is applied to, which over-reports.
+    A transpiler on the original can store another value into the argument too.
+  - `__state`, `__args`, `___field` and the parameters of a patch declared by attribute are not typed,
+    which over-reports.
+  - Harmony refuses a patch whose parameter name the original lacks. The check only reports that it cannot
+    type the value.
+- **A patch parameter of another type than the original declares is not reported.** Harmony fills a patch
+  method's parameters from the original by name. It compares types only for `__result`. For the original's
+  arguments, `__instance` and `___field` it passes the value, or its address for a `ref` parameter, whatever
+  type the patch method declares. A patch method can use that to read a game object as another type, or to
+  store a value of another type into the game's argument, instance or field. The check reports the patch
+  ("Changes how the game works") and, since policy 44, stops typing what other patch methods of the mod are
+  passed. It does not compare a patch method's parameter types with the original's, and does not report a
+  difference as direct memory access. A Limited access result therefore assumes the patch methods declare
+  the types the game does. In the index (policy 44) no patch parameter was found to differ, apart from three
+  whose mod was built for an older game build. Comparing them needs the original of every patch method, which
+  the check traces for fewer than half of the index's patch parameters today.
+- **A parameter declared as `object` is typed from the calls the check sees (policy 42).** For a method
+  nothing outside the mod can call, the parameter holds an object of the types its callers' arguments
+  are declared as. Calls are matched to the method by the type and name the call names: a call that
+  names a derived type for a static method its base type declares (which no C# compiler writes) is not
+  matched, as for `Type` and member parameters. A caller that passes a value the check cannot type (a
+  field or result declared as `object`, an element of an array) makes the parameter untraced.
 - **Explicit-layout overlaps are judged from metadata, and coarsely (policy 18; narrowed policy 34).** A
   field whose type the check cannot lay out (a value type from the game or a library, a framework
   struct that holds a reference or native integer, a generic type or parameter, an inline array)
@@ -39,20 +74,21 @@
   Only the mod's own types are checked. A public explicit union of the game, a trusted library or
   the framework that overlaps references would let a mod confuse types through it without a layout
   of its own. None is known: Harmony's only union is plain data.
-- **Deep game access is coarse (policy 9).** All direct memory access is deep game access,
-  whatever the address: a pointer the mod makes up, or is handed by code the check did not trace,
-  is not yet told apart from one the game hands over, although only the latter is bounded to the
-  game's memory. Until this is split, the group means "the check cannot follow this", not "this
-  stays inside the game". An author who knows the rules can aim for this group alone; see "The
-  groups explain the tier" in [Tiers and labels](tiers-and-labels.md). (Parts of .NET the policy does not classify and calls into code
-  that was not analyzed were in the same tier until policy 13, and are now couldn't be fully
-  checked.) The B review (policy 33) decided against splitting the reason by origin, and this is
-  now a settled decision rather than deferred work: under the threat model the attacker hand-edits
-  IL, so a pointer's game origin cannot be proven to survive arithmetic, a store and reload, or a
-  pass through untraced code; and "bounded to the game's memory" is not a boundary worth promising
-  a player, because a write into the game's own heap can corrupt game state the game then acts on,
-  with the player's full privileges. Keeping all direct memory access in one group is the honest
-  reporting.
+- **Deep game access is coarse (policy 9; narrowed policy 39).** Direct memory access is deep game access
+  whatever the address, with one exception since policy 39: a pointer a game member returned, which
+  the mod only passes on and reads through (see [Tiers and labels](tiers-and-labels.md)). The group still means
+  "the check cannot follow this", not "this stays inside the game". What the exception relies on:
+  - The game returns a pointer that is valid for the type its signature names, and stays valid
+    while the mod holds it. A pointer kept after the game frees what it points to is read or passed
+    back all the same.
+  - A game member takes any value of its parameter types. A game wrapper struct built from a number
+    (where the binding offers that) passes as a game value, before and after policy 39; a pointer
+    made from it is then followed as one the game returned, and a field read through it reads
+    whatever is there. Writes through it are still raw memory.
+  - Types are compared by name, without type arguments, which is why pointers to generic types are
+    not followed.
+  - Another mod that calls a public method of this mod with a pointer is not checked, as calls
+    between mods are not.
 - **Exemptions are reviewed by hand.** The game's native code and direct memory use are exempt
   as a whole (by namespace), because almost every game member reaches them. A game member that
   lets a mod choose the address it reads or writes (a handle passed as `IntPtr`, an unchecked
@@ -77,10 +113,17 @@
   framework members are couldn't be fully checked, and a copy named like a library a loader ships
   but with another hash is reported as one. Trusting such files would need a ledger of official
   package hashes, which does not exist yet. This over-reports and never lowers a result.
-- **Dependencies on other mods are not followed.** A call into an assembly that the mod does not
+- **Calls into other mods are not followed.** A call into an assembly that the mod does not
   ship, and that is not trusted, the game or the framework, makes the mod Broad access
   (couldn't be fully checked), whatever that other mod's own tier is (Limited access or Broad
   access): the other mod's result says what it can do.
+- **Required dependencies are a note, not part of the tier (pipeline 0.3.11).** Installing a mod
+  installs the mods it requires, and a required mod can be Broad access while the mod itself is
+  Limited access. The result notes each required mod with its own tier and leaves the mod's tier as
+  its own code's. (Pipeline 0.3.9 and 0.3.10 gave the mod the highest tier among them.) The release
+  noted is the newest one in the snapshot, not the one a player has installed or the lowest one the
+  mod accepts. A dependency the mod does not declare (it finds another mod's types by name at run
+  time, say) is not known to the scan. Recommended and suggested mods are not noted.
 - **Framework members are classified by name, by hand.** The policy's `safe` list says which
   framework members need no capability; it is not derived from the framework's own code. A
   framework call that reaches a capability through a member the list wrongly calls safe (for
@@ -97,7 +140,12 @@
   which count as code that was not analyzed (members since policy 21; an assembly named like the
   game's that the build lacks altogether is "Calls game code that this game version does not have"
   since policy 29, in the same group; a member the build lacks keeps "Calls code that was not
-  analyzed", with evidence that says so). A member named through a
+  analyzed", with evidence that says so). Since policy 37 a scan can be given other game builds
+  (`--games`): a direct call or field reference to a member or assembly the current build lacks is
+  looked up in them, and reaches what the map of a build that defines it lists. Reflection on such
+  a member, a Harmony patch of one, and a member no given build defines stay code that was not
+  analyzed. Which builds to give is the operator's choice: a build that is not given cannot answer.
+  A member named through a
   derived type that this build declares on a base type is looked up there, as the runtime does
   (policy 22): a game base type's map entry, or a framework base type's member by the policy's
   rules. Members are matched by name, not signature: an overload a base type adds under a name the
@@ -121,7 +169,15 @@
   executable the mod ships in its own folder. The name is not recoverable at the decision point to
   reject it, so this stays open; a start the check cannot prove opens a folder should be read as
   possibly starting a program.
-- **Transpilers on the game's code are deep game access as a whole (policy 11).** The check traces what a transpiler's
+- **The method a transpiler produces is not verified (policy 38).** A transpiler on the game's code is
+  a label, bounded by what the patched game method can do and what the new instructions name. The
+  runtime does not verify the method Harmony compiles, so instructions in an order no compiler
+  emits could treat a value as another type; the check does not detect that. The memory opcodes
+  count as raw memory wherever a mod names them, also when a transpiler only compares against them.
+- **Bounded reflection does not follow other mods' types (policy 38).** Reflection on a member of a
+  game type "or a type derived from it" is a label, with what the game's own derived types can do.
+  A type another mod derives from it is not followed, as calls into other mods are not.
+- **Transpilers on the game's code are checked by what they name (policy 11).** The check traces what a transpiler's
   instructions name, not the patched method Harmony compiles from them: game instructions moved,
   copied or dropped, and memory or native calls the game method already makes, are not followed.
   An instruction's opcode that is not a constant (taken from another instruction) is accepted as
@@ -218,8 +274,8 @@
   `GetValue` is given the member's declared type only for a member found by a constant name on exactly
   one type (policy 35, see [How it works](how-it-works.md)); a value returned by `Invoke`, a member found on a run-time
   type, in an array or list, or by a name that is not a constant, a member of a trusted library or of
-  another of the mod's assemblies, and a plain `object` parameter (not typed from what its callers
-  pass, even when only the mod's own code calls the method) are not typed, and `typeof(X).FullName` is not folded to a constant name. Reflection on such a value is
+  another of the mod's assemblies are not typed (a plain `object` parameter is typed from what its callers
+  pass since policy 42, see above), and `typeof(X).FullName` is not folded to a constant name. Reflection on such a value is
   untraced (Broad access), which over-reports. The type is not carried through a call that returns
   `object`, a local whose address is taken, or a generic helper.
 - **Member names match ignoring case, always (policy 19).** The check does not read the binding

@@ -9,6 +9,184 @@ until policy 36. Before policy 13 the tiers were `content-only`, `known-access` 
 `unverified` between the last two from policy 9 to 12.
 Letters and numbers in parentheses (R3, H12, D9, ...) name internal review and hardening tasks.
 
+## Policy 44
+
+A HarmonyMethod kept in a local (analyzer change, no rule changed). Policy 42 followed the HarmonyMethod of a
+patch applied by hand only inside the `Harmony.Patch` call that makes it. It is now also followed through a
+local variable:
+
+```csharp
+var postfix = new HarmonyMethod(typeof(Patches), "After");
+if (original == null) return;
+harmony.Patch(original, postfix: postfix);
+```
+
+The local must hold nothing else: every store to it in the method is the HarmonyMethod one instruction makes,
+or null. Every load of it must go into `Harmony.Patch` as a prefix, postfix or finalizer. A local whose address
+is taken, that holds one of two HarmonyMethods, or that is loaded for anything else (passed to another method,
+tested for null, stored in a field) is not followed, as before.
+
+A patch method that takes a value by reference (analyzer change). Harmony hands a by-reference patch parameter
+the address of the original's argument, instance or result, and does not compare the types. A patch method
+declared with `ref object craft` can therefore store any object where the original declares a `Craft`, and the
+patch methods called after it are passed that object. The bounds of policies 35, 42 and 43 now check for this:
+
+- `__instance` is not bounded when a method of the mod that Harmony may call takes `__instance` by reference;
+- a parameter typed from the original (policy 43) is not typed when such a method takes the same parameter by
+  reference: by the same name, by its index (`__N`), or by a name an attribute could change. A by-reference
+  `__result` counts for `__result` unless its type is a primitive or `string`, which Harmony accepts only for
+  an original that returns exactly that.
+
+Harmony may call a method that is public, a patch method by name or attribute, handed to `Harmony.Patch`, used
+as a delegate or reached by reflection. The game-API map records at which index each typed parameter of a game
+method is, so that a name and an index can be told apart.
+
+No index result changes tier. 7 more patches in the index are followed through a local (119, from 112).
+
+## Policy 43
+
+The other parameters of a Harmony patch applied by hand (analyzer change, no rule changed; R10). Harmony fills
+a patch method's parameters by name from the method it patches. Policy 42 bounded `__instance`. A parameter
+declared as `object` is now typed the same way when Harmony's rule for its name depends only on the original's
+signature:
+
+| Parameter name | Harmony passes | Typed as |
+|---|---|---|
+| `__result` | the original's result | the original's return type |
+| `__0`, `__1`, ... | the original's parameter at that index | that parameter's declared type |
+| a plain name | the original's parameter of that name | that parameter's declared type |
+
+The value is then an object of that type or of one derived from it, and reflection on its `GetType()` is the
+label "Uses the game's internals by reflection" in place of "Uses reflection the check cannot trace". This
+holds when:
+
+- the patch is applied in code and followed as policy 42 requires (the original is one method its type alone
+  declares);
+- the declared type is a class or struct of the game or of the mod, the same in every overload of the original
+  that has the parameter;
+- nothing outside the mod can call the patch method (the conditions of policy 42 for a parameter declared as
+  `object`), and it has no overloads;
+- no attribute that could be a `[HarmonyArgument]` is on the method, a parameter, the class or a base class;
+- the parameter is not the first one of a method that returns `object` (Harmony gives a postfix's first
+  parameter the result when its type is the return type).
+
+Any other name beginning with `__` (`__state`, `__args`, `___field`) is not typed. The mod's own calls to the
+method add what they pass, as before.
+
+The game-API map (profile format 8) records the declared type of each game method's parameters, by name and by
+index, where that type is a class or struct. Older profiles are refused and made again.
+
+Index: no tier changes. 8 evidence lines in one mod move from "Uses reflection the check cannot trace" to the
+label.
+
+## Policy 42
+
+The instance of a Harmony patch applied by hand (analyzer change, no rule changed; R3). A patch method that
+declares `__instance` as `object` and is given to Harmony in code,
+`harmony.Patch(AccessTools.Method(typeof(T), "Name"), postfix: new HarmonyMethod(typeof(Patches), "After"))`,
+gets the instance of the method that call patches. Policy 35 bounded that instance only for patches declared
+by attribute. It is now bounded for a manual patch too, to `T` or a type derived from it, when:
+
+- the HarmonyMethod is made inside the `Harmony.Patch` call and given as its prefix, postfix or finalizer
+  (from `new HarmonyMethod(typeof(X), "Name")`, or from `new HarmonyMethod(...)` around a lookup by a constant
+  name such as `typeof(X).GetMethod("Name", flags)`; setting its `priority` in an initializer is allowed). One
+  that is stored, returned or passed anywhere else is not followed: its method counts as reached by
+  reflection, as before;
+- the original is a method found by a constant name on exactly one type (a `typeof`, or a game type found
+  by name that only the game has), which that type declares and no base type does, in any casing. It may be
+  kept in a local or a field first;
+- nothing else reaches the patch method: no call from the mod's own code, no delegate, no other lookup.
+
+Reflection on `__instance.GetType()` in such a method is then the label "Uses the game's internals by
+reflection" with what the members looked up can do, and no longer "Uses reflection the check cannot trace".
+A patch method that no attribute and no such call applies is given no instance by anything the check sees.
+
+A parameter declared as `object` (D8). For a method nothing outside the mod can call (not public on a
+visible type, not virtual, not a Harmony patch method, not taken as a delegate, not reached by reflection),
+such a parameter now holds what the mod's own calls pass: an object of the type each argument is declared
+as, or of a type derived from it (through other such parameters too). `target.GetType().GetMethod("Name")`
+in a helper called with game objects is then reflection bounded to those game types. A call that passes a
+value the check cannot type, or a store into the parameter, leaves it untraced as before.
+Method lookups by a constant name now also record whether the type alone declares the method; two different
+methods of one type kept in one local are followed as either of them.
+
+## Policy 41
+
+The combinations count only writes that can put content into a file. "Connects to the internet and
+changes files where the game loads code from" (and the three combinations like it) used to count any
+file operation the policy calls a write. Making a folder (`Directory.CreateDirectory`,
+`DirectoryInfo.Create`, `CreateSubdirectory`) and deleting a file or folder put nothing where the loader
+looks, so they no longer count for a combination; they keep their label. New capabilities
+"file-content-code" and "file-content-outside" (informational) carry the writes that do count, and the
+combinations name them. A write reached by reflection, a patch, the game or a library counts as before.
+
+## Policy 40
+
+A reflected value in a local declared as object (analyzer change, no rule changed). A value read with
+`FieldInfo.GetValue`, `PropertyInfo.GetValue` or Harmony's `Traverse` and kept in a local declared as
+`object` is now followed across a branch, as a Type, member or path in a local already was: the local
+holds the join of every value stored to it in the method. So
+`value?.GetType().GetMethod("Name")?.Invoke(value, null)`, on a value read through a member whose declared
+type is a game type, is the label "Uses the game's internals by reflection" with what members of that name
+can do, and no longer "Uses reflection the check cannot trace".
+
+## Policy 39
+
+Pointers the game returned (analyzer change, no rule changed). A pointer to a named type that a game
+member returns is followed from that call. It is not "Reads or writes memory directly" while the mod
+only:
+
+- keeps it in a local of that pointer type (every store to the local such a pointer or null, and the
+  local's address never taken);
+- passes it to a game member as a parameter of the same pointer type, or as a reference to the type
+  it points to;
+- passes it to a method of its own as a parameter of the same pointer type, or returns it as that type
+  (each call in the mod to such a method must pass pointers the game returned; the method's signature
+  is then not raw memory either);
+- reads a field of the type it points to, or of a struct field of it (`viewport->Pos.X`).
+
+Writing through it, reading it as another type, arithmetic on it, converting it, storing it in a
+field, and any pointer that did not come from a game call (a number, `fixed`, `stackalloc`, another
+mod's delegate) are raw memory as before. Not followed: `void*`, function pointers, pointers to
+generic types, and methods without a body. This reverses the B review's decision (policy 33) not to
+tell a game pointer from one the mod makes up; what it relies on is in docs/known-gaps.md.
+
+## Policy 38
+
+Two reasons of deep game access become labels in Limited access: the check follows what they reach
+instead of counting the technique.
+
+- "code-rewrite", a Harmony transpiler on the game's code, is the label "Rewrites parts of the game's
+  code". What the method Harmony compiles can reach is the patched game method's own capabilities
+  (with any the policy exempts on that member given back, as before) and what the new instructions
+  name (an untraced operand is still "unresolved-reflection", a target that is not the game's code
+  still "rewrite-outside-game"). New: the opcodes that read or write through an address, copy or
+  fill a block or take stack memory (`OpCodes.Ldind_*`, `Stind_*`, `Ldobj`, `Stobj`, `Cpblk`,
+  `Initblk`, `Localloc`) are "raw-memory" wherever a mod names them, as `OpCodes.Calli` is native
+  code. The runtime does not verify the compiled method; that is a known gap.
+- "bounded-reflection", reflection traced to a game or mod type and the types derived from it, is
+  the label "Uses the game's internals by reflection". New: when no member was looked up by name
+  (an object created from a run-time type, for example) and the use does more than read or write a
+  field, the mod also gets everything any member of that type, and of the game types deriving
+  from it, can do. A member looked up by name already got that for its name.
+- New finding "game-wide-reflection" (deep game access): a type found in a game or mod assembly by
+  a name built at run time. The check does not know the type, so it stays a Broad-access reason:
+  "Uses reflection on a game type chosen at run time, which the check cannot follow". It was part
+  of "bounded-reflection".
+
+A finding can now be assigned to a label as well as to a Broad-access group.
+
+## Policy 37
+
+Several game builds. Analyzer and pipeline change, no rule changed. A direct reference to a game member
+that the game build checked against does not define, or to an assembly named like the game's that it
+does not have, is looked up in the other game builds given (`analyze --other-game-profile`,
+`scan --games`). When another build has the assembly and the type or a base type defines the member, the
+reference reaches what that build's game-API map lists for it, and it is no longer "Calls code that was
+not analyzed" or "Calls game code that this game version does not have". The result gets a warning that
+names the builds. A member no given build defines stays as before. So does reflection on such a member,
+and a Harmony patch of one. Without other builds nothing changes.
+
 ## Policy 36
 
 The top tier "Full access" is renamed "Broad access", with no change to what puts a mod in it or to

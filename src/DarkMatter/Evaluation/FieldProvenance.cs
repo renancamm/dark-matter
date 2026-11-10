@@ -47,7 +47,8 @@ internal sealed class FieldProvenance {
     /// <param name="analyzed">The assemblies analyzed together (a mod, or a set of trusted libraries).</param>
     /// <param name="methods">Their methods.</param>
     /// <param name="access">What reaching a type held in a traced node can do, and where a type lives.</param>
-    public FieldProvenance(IReadOnlyCollection<AssemblyFacts> analyzed, IReadOnlyCollection<MethodFacts> methods, TypeAccess access) {
+    /// <param name="gameMembers">The declared types of the game's members, from the game profile; null without one.</param>
+    public FieldProvenance(IReadOnlyCollection<AssemblyFacts> analyzed, IReadOnlyCollection<MethodFacts> methods, TypeAccess access, GameTypes? gameMembers = null) {
         this.methods = methods;
         this.access = access;
         own = analyzed.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -59,8 +60,14 @@ internal sealed class FieldProvenance {
         var byKey = new Dictionary<string, List<MethodFacts>>(StringComparer.OrdinalIgnoreCase);
         var strings = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var called = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // methods some analyzed code calls
+        // Harmony patches applied by hand, by patch method (R3): what each Harmony.Patch call that hands the method over patches.
+        var manual = new Dictionary<string, List<ManualPatch>>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in methods) {
             called.UnionWith(m.Callees);
+            foreach (var p in m.ManualPatches) {
+                if (!manual.TryGetValue(p.Method, out var applied)) manual[p.Method] = applied = [];
+                applied.Add(p);
+            }
             foreach (var (n, values) in m.StringArguments) Set(strings, n).UnionWith(values);
             foreach (var (f, held) in m.ReflectionStores) Set(stores, f).UnionWith(held);
             foreach (var (f, sources) in m.FieldCopies) Set(copies, f).UnionWith(sources);
@@ -86,6 +93,14 @@ internal sealed class FieldProvenance {
         // case; a name ending in '*' is a prefix; "/Name" is every member of a nested type of that name).
         // H7 ("F1"): before, every method of a reached type counted, whatever the lookup could return.
         var reach = new Dictionary<string, HashSet<string>?>(StringComparer.Ordinal);
+        // The same, without the lookups that only handed a method of the mod to Harmony.Patch as a patch method
+        // (ReflectedType.Handoff, R3): nothing but Harmony got hold of the method there, so such a lookup is no way
+        // to call it with an instance of the mod's choosing. Only the instance Harmony passes is decided by this one.
+        var reachOther = new Dictionary<string, HashSet<string>?>(StringComparer.Ordinal);
+        // A handoff counts as one only when the method it names is declared by the type it names (the method the
+        // lookup finds, whose key the ManualPatch carries): a name only a base type has finds that type's method.
+        bool Excused(ReflectedType r) => r.Handoff && r.NameNode == null && r.Assembly != null && r.Members is { Count: > 0 } named
+            && named.All(n => byKey.ContainsKey($"{r.Assembly}|{r.Type}::{n}"));
         // Lookups whose member name is a string parameter: they reach what every call passes, which
         // depends on which methods are reached (below, to a fixpoint).
         var pending = new HashSet<(string Type, string NameNode, string Lookup)>();
@@ -101,7 +116,7 @@ internal sealed class FieldProvenance {
         // analyzed code's types that derive from it are reached too, also when it is not one of that code's
         // own (a game type the mod derives from, found through GetType() of a game-typed value: H7b), by
         // the rule in Related below (a type is reached when a type it derives from is).
-        bool Reflected(string type, string? assembly, IReadOnlyList<string>? members = null, string? nameNode = null, string? lookup = null, bool derived = false) {
+        bool Reflected(string type, string? assembly, IReadOnlyList<string>? members = null, string? nameNode = null, string? lookup = null, bool derived = false, bool excused = false) {
             if (type == "*") {
                 bool before = anyOwnType;
                 anyOwnType |= assembly != null && access.IsOwnAssembly(assembly);
@@ -110,49 +125,99 @@ internal sealed class FieldProvenance {
             if (!derived && !access.IsOwn(type, assembly)) return false;
             if (members == null && nameNode != null && lookup != null && !coarse) {
                 bool added = pending.Add((type, nameNode, lookup));
+                reachOther.TryAdd(type, new(StringComparer.Ordinal));
                 return reach.TryAdd(type, new(StringComparer.Ordinal)) || added;
             }
-            return AddReach(type, members);
+            return AddReach(type, members, excused);
         }
-        bool AddReach(string type, IReadOnlyList<string>? members) {
+        bool AddReach(string type, IReadOnlyList<string>? members, bool excused = false) {
+            if (!excused) AddTo(reachOther, type, members);
+            return AddTo(reach, type, members);
+        }
+        bool AddTo(Dictionary<string, HashSet<string>?> map, string type, IReadOnlyList<string>? members) {
             if (members == null || coarse) {
-                if (reach.TryGetValue(type, out var cur) && cur == null) return false;
-                reach[type] = null;
+                if (map.TryGetValue(type, out var cur) && cur == null) return false;
+                map[type] = null;
                 return true;
             }
-            if (!reach.TryGetValue(type, out var set)) reach[type] = set = new(StringComparer.Ordinal);
+            if (!map.TryGetValue(type, out var set)) map[type] = set = new(StringComparer.Ordinal);
             if (set == null) return false;
             bool changed = false;
             foreach (var n in members) changed |= set.Add(n);
             return changed;
         }
         foreach (var m in methods) {
-            foreach (var r in m.ReflectedTypes) Reflected(r.Type, r.Assembly, r.Members, r.NameNode, r.Lookup);
+            foreach (var r in m.ReflectedTypes) Reflected(r.Type, r.Assembly, r.Members, r.NameNode, r.Lookup, excused: Excused(r));
             foreach (var b in m.BoundedReflection) Reflected(b.Type, b.Assembly, derived: true);
         }
         foreach (var t in analyzed.SelectMany(a => a.PatchTargets).Where(t => t.Type != null)) Reflected(t.Type!, t.Assembly, t.Member is { } pm ? [pm] : null);
 
-        reflected = key => byKey.TryGetValue(key, out var rms) && (anyOwnType || rms.Any(x => Reached(x.Name)));
-        // Whether a method is called by code the check does not see, with arguments of its choosing.
-        string? CalledFromOutside(List<MethodFacts> ms) {
+        reflected = key => byKey.TryGetValue(key, out var rms) && (anyOwnType || rms.Any(x => Reached(x.Name, reach)));
+        // Whether a method is called by code the check does not see, with arguments of its choosing. lookups: the
+        // reflection reach that counts (all of it, or without the lookups that only handed a method to Harmony.Patch).
+        string? CalledFromOutside(List<MethodFacts> ms, Dictionary<string, HashSet<string>?> lookups) {
             if (ms.FirstOrDefault(x => x.CalledFromOutside != null) is { } m) return $"the method {m.CalledFromOutside}";
             if (anyOwnType) return "the method can be reached by reflection on a type found by a name built at run time";
-            foreach (var x in ms) if (Reached(x.Name)) return "the method can be reached by reflection";
+            foreach (var x in ms) if (Reached(x.Name, lookups)) return "the method can be reached by reflection";
             return null;
+        }
+        // Whether a method of the analyzed code that Harmony may call as a patch can replace what Harmony passes other
+        // patch methods for `passed` (PatchParameter): through a by-reference parameter, which Harmony gives the address
+        // of the original's argument, instance or result whatever type the parameter declares. Harmony may call a
+        // method that code outside the analysis can call (a patch method by name or attribute, a public one), that is
+        // handed to Harmony.Patch, taken as a delegate or reached by reflection. The method named is why.
+        string? Replaced(string passed, IReadOnlyDictionary<string, string>? original = null, string? method = null) {
+            int? Position(string name) => original != null && method != null ? MemberTypes.Position(original.GetValueOrDefault(MemberTypes.ParameterPositionKey(method, name))) : null;
+            foreach (var m in methods) {
+                if (!m.PatchReplaces.Any(r => PatchParameter.Replaces(r, passed, Position))) continue;
+                if (m.CalledFromOutside != null || anyOwnType || manual.ContainsKey(m.Key) || untracked.Contains(Nodes.Arg(m.Key, -1)) || Reached(m.Name, reach)) return m.Name;
+            }
+            return null;
+        }
+        // The declared members of a type of the analyzed code or of the game (see AssemblyFacts.MemberTypes), for
+        // typing what Harmony passes from an original's signature (R10); null for any other type, a type two analyzed
+        // assemblies of one name define, or a type found by name that is not the game's alone.
+        IReadOnlyDictionary<string, string>? DeclaredMembers(string type, string? assembly) {
+            if (assembly != null && own.Contains(assembly)) {
+                var defining = analyzed.Where(a => string.Equals(a.Name, assembly, StringComparison.OrdinalIgnoreCase) && a.MemberTypes.ContainsKey(type)).ToList();
+                return defining.Count == 1 ? defining[0].MemberTypes[type] : null;
+            }
+            return gameMembers != null && access.IsGame(type, assembly, derived: false) ? gameMembers.Members.GetValueOrDefault(type) : null;
+        }
+        // The members a Harmony.Patch call patches with a method (R3): each must be one method found by a constant
+        // name on exactly one type, which that type alone declares (MemberValue.Sole); a type found by name must be
+        // the game's alone (as for TypedByName). Null with why when the check cannot tell.
+        (List<HeldType>? Originals, string? Why) PatchedBy(ManualPatch p, HashSet<string> visiting, bool checkWritten) {
+            IEnumerable<HeldType> originals;
+            if (p.Originals != null) originals = p.Originals;
+            else if (p.OriginalNode != null) {
+                var (of, ofWhy) = Trace(p.OriginalNode, visiting, checkWritten);
+                if (ofWhy != null) return (null, $"Harmony.Patch applies the patch method to {Nodes.Describe(p.OriginalNode)}, which {ofWhy}");
+                originals = of;
+            } else return (null, "Harmony.Patch applies the patch method to a member the check does not trace");
+            var result = new List<HeldType>();
+            foreach (var h in originals) {
+                if (!h.Member || h.Bounded || h.Type == "*" || h.Value is not { Kind: MemberKind.Method, Sole: not null })
+                    return (null, $"Harmony.Patch applies the patch method to a member of {h.Type} that the check cannot tell is declared by that type alone");
+                if (h.Assembly == null && !access.IsGame(h.Type, null, derived: false))
+                    return (null, $"Harmony.Patch applies the patch method to a member of {h.Type}, a type found by name that is not the game's alone");
+                result.Add(h);
+            }
+            return (result, null);
         }
         // Whether a lookup can return the method "Type::Name": by its name, or by the name of a property
         // or event it belongs to (whatever the method is called).
-        bool Reached(string method) {
+        bool Reached(string method, Dictionary<string, HashSet<string>?> reach) {
             if (reach.Count == 0) return false;
             int sep = method.LastIndexOf("::", StringComparison.Ordinal);
             if (sep <= 0) return false;
             var simple = method[(sep + 2)..];
-            if (Related(method[..sep], n => ReflectionApis.MemberMatches(n, simple))) return true;
+            if (Related(method[..sep], n => ReflectionApis.MemberMatches(n, simple), reach)) return true;
             if (accessors.TryGetValue(method, out var of))
                 foreach (var o in of) {
                     int osep = o.LastIndexOf("::", StringComparison.Ordinal);
                     var name = o[(osep + 2)..];
-                    if (Related(o[..osep], n => ReflectionApis.MemberMatches(n, name) || AccessorPrefixes.Any(p => ReflectionApis.MemberMatches(n, p + name))))
+                    if (Related(o[..osep], n => ReflectionApis.MemberMatches(n, name) || AccessorPrefixes.Any(p => ReflectionApis.MemberMatches(n, p + name)), reach))
                         return true;
                 }
             return false;
@@ -163,7 +228,7 @@ internal sealed class FieldProvenance {
         // GetMember as the type it was found from (H3, H1a-review H5), so a name looked up on the outer
         // type is one on the nested type too, and "/Name" reaches every member of the nested type Name
         // (and of the types nested in it). names: whether a reached name finds the member.
-        bool Related(string type, Func<string, bool> names) {
+        bool Related(string type, Func<string, bool> names, Dictionary<string, HashSet<string>?> reach) {
             for (var t = type; ; t = t[..t.LastIndexOf('/')]) {
                 // The nested type, under t, that holds the member ("" for a member of t itself).
                 var below = t.Length < type.Length ? type[(t.Length + 1)..] : "";
@@ -209,7 +274,7 @@ internal sealed class FieldProvenance {
                 var (of, ofWhy) = Trace(source, visiting, checkWritten);
                 if (ofWhy != null) return (held, $"is not known: {Nodes.Describe(source)} {ofWhy}");
                 foreach (var h in of) {
-                    if (!h.Member || h.Bounded || h.Value is not { } v || v.Kind != kind)
+                    if (!h.Member || h.Bounded || h.Value is not { Typed: true } v || v.Kind != kind)
                         return (held, $"is not known: {Nodes.Describe(source)} can hold a member whose declared type the check does not know");
                     held.Add(new(v.Type, v.Asm, false, Bounded: value));
                 }
@@ -219,11 +284,36 @@ internal sealed class FieldProvenance {
             var key = Nodes.Key(node);
             int bar = key.IndexOf('|', StringComparison.Ordinal), sep = key.IndexOf("::", StringComparison.Ordinal);
             if (bar < 0 || sep < bar || !own.Contains(key[..bar])) return (held, "belongs to code that was not analyzed");
-            if (node.StartsWith(Nodes.ArgPrefix, StringComparison.Ordinal)) {
+            if (node.StartsWith(Nodes.ArgPrefix, StringComparison.Ordinal) || node.StartsWith(Nodes.ObjectArgPrefix, StringComparison.Ordinal)) {
+                bool objects = node.StartsWith(Nodes.ObjectArgPrefix, StringComparison.Ordinal);
                 if (!byKey.TryGetValue(key, out var ms)) return (held, "belongs to a method the check did not find");
-                if (CalledFromOutside(ms) is { } why) return (held, $"can be any value: {why}");
+                // (For an object parameter, a lookup that only handed the method to Harmony.Patch is not a way to call
+                // it with any value: what Harmony passes is added below. A Type or member parameter stays any value then.)
+                if (CalledFromOutside(ms, objects ? reachOther : reach) is { } why) return (held, $"can be any value: {why}");
                 if (untracked.Contains(Nodes.Arg(key, -1))) return (held, "can be any value: the method is used as a delegate");
                 if (untracked.Contains(node)) return (held, "is also given a value the check cannot trace");
+                // Applied as a patch by hand (R10, policy 43): Harmony also calls the method, and fills each parameter
+                // by its name from the original. Known only for the parameters the walker lists (MethodFacts.PatchParameters),
+                // of a method without overloads, and only when every original's signature types it: the original's
+                // parameter of that name or index, or its result. The value is then of that type or of one derived from it.
+                if (objects && manual.TryGetValue(key, out var applied)) {
+                    int index = int.TryParse(node[(node.LastIndexOf('#') + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : -1;
+                    if (ms.Count != 1 || !ms[0].PatchParameters.TryGetValue(index, out var parameter))
+                        return (held, "can be any value: Harmony calls the method as a patch, and the check does not know what Harmony passes for this parameter");
+                    foreach (var p in applied) {
+                        var (originals, patchWhy) = PatchedBy(p, visiting, checkWritten);
+                        if (originals == null) return (held, $"can be any value: {patchWhy}");
+                        foreach (var h in originals) {
+                            var sole = h.Value!.Value.Sole!;
+                            var of = DeclaredMembers(h.Type, h.Assembly);
+                            if (of?.GetValueOrDefault(PatchParameter.TypeKey(sole, parameter)) is not { } declared || MemberTypes.Decode(declared) is not var (type, asm))
+                                return (held, $"can be any value: Harmony calls the method as a patch of {h.Type}::{sole}, and the check does not know the type of {PatchParameter.Describe(parameter)} of that method");
+                            if (Replaced(parameter, of, sole) is { } replacer)
+                                return (held, $"can be any value: Harmony calls the method as a patch of {h.Type}::{sole}, and {replacer} can replace {PatchParameter.Describe(parameter)} of that method through a by-reference parameter");
+                            held.Add(new(type, asm, false, Bounded: true));
+                        }
+                    }
+                }
             } else if (node.StartsWith(Nodes.InstancePrefix, StringComparison.Ordinal)) {
                 // What Harmony passes as __instance (D7): bounded by the patch target only while Harmony is the only
                 // caller this mod has. A patch method is called from outside by design (CalledFromOutside); its own
@@ -233,8 +323,21 @@ internal sealed class FieldProvenance {
                 if (called.Contains(key)) return (held, "can be any object: the mod's own code calls the patch method");
                 if (untracked.Contains(Nodes.Arg(key, -1))) return (held, "can be any object: the patch method is used as a delegate");
                 if (anyOwnType) return (held, "can be any object: the patch method can be reached by reflection on a type found by a name built at run time");
-                if (ms.Any(x => Reached(x.Name))) return (held, "can be any object: the patch method can be reached by reflection");
+                // (A lookup that only handed the method to Harmony.Patch is not such a way: what that call patches bounds it, below.)
+                if (ms.Any(x => Reached(x.Name, reachOther))) return (held, "can be any object: the patch method can be reached by reflection");
                 if (untracked.Contains(node)) return (held, "is also given a value the check cannot trace");
+                // (Policy 44) A patch method that takes __instance by reference is given the address of the original's
+                // instance argument, and can store any object there for the patch methods called after it.
+                if (Replaced(PatchParameter.Instance) is { } replacer) return (held, $"can be any object: {replacer} can replace the instance through a by-reference __instance");
+                // Applied by hand (R3): the instance of each original a Harmony.Patch call names with this method. The
+                // original must be one method found by a constant name on exactly one type, which that type alone
+                // declares (MemberValue.Sole): Harmony then patches that method, which runs on instances of the type
+                // or of types derived from it. A type found by name must be the game's alone (as for TypedByName).
+                foreach (var p in manual.GetValueOrDefault(key) ?? []) {
+                    var (originals, patchWhy) = PatchedBy(p, visiting, checkWritten);
+                    if (originals == null) return (held, $"can be any object: {patchWhy}");
+                    foreach (var h in originals) held.Add(new(h.Type, h.Assembly, false, Bounded: true));
+                }
             } else if (node.StartsWith(Nodes.ReturnPrefix, StringComparison.Ordinal)) {
                 if (!byKey.TryGetValue(key, out var ms)) return (held, "belongs to a method the check did not find");
                 if (ms.Any(x => x.Bodiless)) return (held, "comes from a method without a body the check can read");
@@ -265,7 +368,7 @@ internal sealed class FieldProvenance {
             var key = Nodes.Key(node);
             int bar = key.IndexOf('|', StringComparison.Ordinal);
             if (bar < 0 || !own.Contains(key[..bar]) || !byKey.TryGetValue(key, out var ms)) return null;
-            if (CalledFromOutside(ms) != null || untracked.Contains(Nodes.Arg(key, -1))) return null;
+            if (CalledFromOutside(ms, reach) != null || untracked.Contains(Nodes.Arg(key, -1))) return null;
             // A call the check saw that recorded no string for the parameter: what it passes is not known.
             if (!strings.TryGetValue(node, out var values)) return called.Contains(key) ? null : result;
             foreach (var v in values) {
@@ -321,7 +424,7 @@ internal sealed class FieldProvenance {
     /// <param name="unresolved">Reflection through nodes that cannot be traced, per method.</param>
     /// <param name="bounded">Reflection through nodes traced only to the game's or the mod's types, per method.</param>
     /// <param name="caps">Capabilities and findings reached through traced nodes, per method.</param>
-    public void Resolve(List<(MethodFacts Method, string Detail)> unresolved, List<(MethodFacts Method, string Detail)> bounded, List<(MethodFacts Method, Evidence Evidence)> caps) {
+    public void Resolve(List<(MethodFacts Method, string Detail)> unresolved, List<(MethodFacts Method, string Detail, string Type, string? Assembly, bool Member)> bounded, List<(MethodFacts Method, Evidence Evidence)> caps) {
         (HashSet<HeldType> Held, string? Why) Trace(string node, HashSet<string> visiting, bool checkWritten) => trace(node, visiting, checkWritten);
         foreach (var m in methods) {
             foreach (var r in m.FieldReflection) {
@@ -337,7 +440,7 @@ internal sealed class FieldProvenance {
                     // when that is the game's or the mod's code, unresolved otherwise.
                     if (h.Bounded && r.Invokes) {
                         var d = $"{r.Detail}  ({Nodes.Describe(r.Node)} holds {(h.Member ? "a member of " : "")}{Bound(h)})";
-                        if (access.Bounded(h.Type, h.Assembly)) bounded.Add((m, d));
+                        if (access.Bounded(h.Type, h.Assembly)) bounded.Add((m, d, h.Type, h.Assembly, h.Member));
                         else unresolved.Add((m, d + ", which is not the game's or the mod's code"));
                     }
                     // Silence on purpose for a member: it was accounted for where it was looked up.
@@ -355,7 +458,7 @@ internal sealed class FieldProvenance {
             foreach (var (f, held) in m.ReflectionStores.Where(kv => External(kv.Key)))
                 foreach (var h in held.Where(h => h.Bounded)) {
                     var d = $"{(h.Member ? "a member of " : "")}{Bound(h)} is stored into {Nodes.Describe(f)}, which belongs to code that was not analyzed  <-  {m.Name}";
-                    if (access.Bounded(h.Type, h.Assembly)) bounded.Add((m, d));
+                    if (access.Bounded(h.Type, h.Assembly)) bounded.Add((m, d, h.Type, h.Assembly, h.Member));
                     else unresolved.Add((m, d));
                 }
             foreach (var (f, sources) in m.FieldCopies.Where(kv => External(kv.Key)))
@@ -367,7 +470,7 @@ internal sealed class FieldProvenance {
                     }
                     foreach (var h in held.Where(h => h.Bounded)) {
                         var d = $"{Nodes.Describe(g)} is stored into {Nodes.Describe(f)}, which belongs to code that was not analyzed, and holds {(h.Member ? "a member of " : "")}{Bound(h)}  <-  {m.Name}";
-                        if (access.Bounded(h.Type, h.Assembly)) bounded.Add((m, d));
+                        if (access.Bounded(h.Type, h.Assembly)) bounded.Add((m, d, h.Type, h.Assembly, h.Member));
                         else unresolved.Add((m, d));
                     }
                 }

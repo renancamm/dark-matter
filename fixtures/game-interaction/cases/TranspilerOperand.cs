@@ -3,6 +3,7 @@
 // by a constant name. The game method Harmony compiles is not one the check has read, so this is
 // deep game access ("Rewrites the game's code ..."), not "Builds code at run time". Expected: Broad
 // access, deep game access, that reason only, "Changes how the game works".
+// Policy 38: a transpiler on the game's code is the label "Rewrites parts of the game's code", not a Broad-access reason.
 using System.Collections.Generic;
 using System.Reflection.Emit;
 using HarmonyLib;

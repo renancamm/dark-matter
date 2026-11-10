@@ -76,6 +76,10 @@ internal static partial class ReflectionApis {
         "HarmonyLib.PatchProcessor::.ctor",
     ];
 
+    /// <summary>Members that read a value through a field or property found by reflection (see MethodWalker's summaries).</summary>
+    public static bool ReadsValue(string name) => name is "System.Reflection.FieldInfo::GetValue" or "System.Reflection.PropertyInfo::GetValue"
+        || name.StartsWith("HarmonyLib.Traverse", StringComparison.Ordinal);
+
     /// <summary>The type and member reference types whose values the walker traces (also through fields).</summary>
     // Matched by signature name, not gated on the framework (G4): this only decides which fields,
     // parameters, returns and locals the walker traces. A type of the same name defined elsewhere is traced

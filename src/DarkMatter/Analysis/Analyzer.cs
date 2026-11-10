@@ -25,8 +25,9 @@ internal sealed record Allowlist(IReadOnlySet<string> Hashes, IReadOnlySet<strin
 /// (path sources such as the saves folder).</param>
 /// <param name="gameInlineArrays">The game's [InlineArray] types, from the game profile (none without one).</param>
 /// <param name="gameTypes">The declared types of the game's members and its base types, from the game profile (D2); null without one.</param>
+/// <param name="explain">Also note what produced each value the walkers do not follow (see <see cref="Slot.Why"/>), for the facts output.</param>
 internal sealed class Analyzer(Policy policy, Allowlist allow, IReadOnlyDictionary<string, string[]> gameApi, IReadOnlySet<string> framework,
-    IReadOnlySet<string>? game, IReadOnlyDictionary<string, InlineArrayShape>? gameInlineArrays = null, GameTypes? gameTypes = null) {
+    IReadOnlySet<string>? game, IReadOnlyDictionary<string, InlineArrayShape>? gameInlineArrays = null, GameTypes? gameTypes = null, bool explain = false) {
     /// <summary>The bytes of a file, or null (with why) if it cannot be read.</summary>
     public static byte[]? Read(string path, out string? error) {
         error = null;
@@ -54,7 +55,7 @@ internal sealed class Analyzer(Policy policy, Allowlist allow, IReadOnlyDictiona
         try {
             using var pe = new PEReader(System.Collections.Immutable.ImmutableArray.Create(bytes));
             if (!pe.HasMetadata) { facts.Classification = FileClass.Native; return facts; }
-            new AssemblyWalker(policy, allow, gameApi, framework, game, pe, facts, gameInlineArrays, gameTypes).Run();
+            new AssemblyWalker(policy, allow, gameApi, framework, game, pe, facts, gameInlineArrays, gameTypes, explain).Run();
         } catch (Exception e) {
             // Deliberately broad: malformed metadata can fail in many ways, and any of them is a
             // finding (Broad access) for this file, never a crash that loses the whole run.

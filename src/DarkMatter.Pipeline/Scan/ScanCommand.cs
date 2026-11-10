@@ -30,7 +30,7 @@ namespace DarkMatter.Pipeline.Scan;
 /// runs as a separate process (<see cref="AnalyzerProcess"/>).
 /// </summary>
 internal static partial class ScanCommand {
-    static readonly string[] Valued = ["--game", "--state", "--snapshot", "--format", "--out", "--analyzer", "--max-bytes", "--max-extracted-bytes", "--retries", "--name"];
+    static readonly string[] Valued = ["--game", "--games", "--state", "--snapshot", "--format", "--out", "--analyzer", "--max-bytes", "--max-extracted-bytes", "--retries", "--name"];
     static readonly string[] Flags = ["--full", "--all", "-v", "--verbose"];
 
     /// <summary>Version of the run and result documents.</summary>
@@ -48,6 +48,9 @@ internal static partial class ScanCommand {
     sealed class Settings {
         public required string State { get; init; }
         public required string Game { get; init; }
+
+        /// <summary>The other game builds of <c>--games</c>, newest first: members the game lacks are looked up there.</summary>
+        public required IReadOnlyList<string> OtherGames { get; init; }
         public required string SnapshotSource { get; init; }
         public required bool Full { get; init; }
         public required bool All { get; init; }
@@ -71,12 +74,17 @@ internal static partial class ScanCommand {
     /// for this run only, and results made with it are marked to be retried.
     /// </summary>
     sealed record Context(Snapshot Snapshot, ArchiveStore Store, string Allowlist, string? LibraryProfile, string GameProfile, string Key, JsonObject Stamp,
-        string? Incomplete = null, bool ProfileReused = false);
+        string? Incomplete = null, bool ProfileReused = false) {
+        /// <summary>The profiles of the other game builds, as the analyzer takes them ("NAME=FILE").</summary>
+        public IReadOnlyList<string> OtherGameProfiles { get; init; } = [];
+    }
 
     /// <summary>One listing (or local mod) in a run.</summary>
     sealed class Entry {
         public required string Id { get; init; }
         public string Name { get; init; } = "";
+        /// <summary>The listing's type in the index ("mod", "mod-loader"); null for a local scan.</summary>
+        public string? Type { get; init; }
         public Release? Release { get; init; }
         public JsonObject? Identity { get; init; }
         public string Status { get; set; } = "pending";  // scanned, cached, skipped, failed
@@ -94,14 +102,16 @@ internal static partial class ScanCommand {
         /// <summary>The listing's last recorded release (from latest.json) and its stored result, read before this run stores anything.</summary>
         public JsonObject? Before { get; set; }
         public JsonNode? BeforeResult { get; set; }
+
+        /// <summary>The stored result a cached entry was read from, as text: stored again when its dependencies changed it.</summary>
+        public string? StoredText { get; set; }
     }
 
     public static async Task<int> Run(IReadOnlyList<string> argv) {
         if (argv.Count == 0 || argv[0] is not ("index" or "mod")) throw new UsageException("scan needs a mode: index, or mod ID[@VERSION] | PATH...");
         var mode = argv[0];
         var o = Options.Parse(argv.Skip(1).ToList(), Valued, Flags);
-        var game = o.Get("--game") ?? throw new UsageException("scan needs --game DIR (the game folder whose DLLs the game profile is made from)");
-        if (!Directory.Exists(game)) throw new UsageException($"game folder not found: {game}");
+        var (game, otherGames) = GameBuilds(o.Get("--game"), o.Get("--games"));
         var format = o.Get("--format") ?? "text";
         if (format is not ("text" or "json")) throw new UsageException("--format is text or json");
         if (mode == "index" && o.Positional.Count > 0) throw new UsageException($"scan index takes no arguments, not {o.Positional[0]}");
@@ -114,6 +124,7 @@ internal static partial class ScanCommand {
         var s = new Settings {
             State = state,
             Game = game,
+            OtherGames = otherGames,
             SnapshotSource = o.Get("--snapshot") ?? Snapshot.DefaultUrl,
             Full = o.Has("--full"),
             All = o.Has("--all"),
@@ -136,6 +147,44 @@ internal static partial class ScanCommand {
             // A folder that cannot be deleted must not replace the run's own outcome or exception.
             DeleteWork(s.Work);
         }
+    }
+
+    [GeneratedRegex("[0-9]+")]
+    private static partial Regex Digits();
+
+    /// <summary>
+    /// The game build mods are checked against, and the other builds a missing game member is looked up
+    /// in. <c>--game DIR</c> is one build. <c>--games DIR</c> is a folder of builds (each subfolder with
+    /// DLLs is one): the one checked against is <c>--game</c> if given, else the newest by the numbers in
+    /// the folder names ("ksa_v2026.11.10.5801" is newer than "ksa_v2026.10.25.5707"); the rest are the
+    /// other builds, newest first.
+    /// </summary>
+    internal static (string Game, IReadOnlyList<string> Others) GameBuilds(string? game, string? games) {
+        if (game != null && !Directory.Exists(game)) throw new UsageException($"game folder not found: {game}");
+        if (games == null)
+            return (game ?? throw new UsageException("scan needs --game DIR (the game folder whose DLLs the game profile is made from) or --games DIR (a folder of game builds)"), []);
+        if (!Directory.Exists(games)) throw new UsageException($"folder of game builds not found: {games}");
+        static string Name(string dir) => Path.GetFileName(Path.TrimEndingDirectorySeparator(dir));
+        // Newest first: by the numbers in the name, one after another, then by the name.
+        static int Newer(string a, string b) {
+            var (x, y) = (Digits().Matches(Name(a)), Digits().Matches(Name(b)));
+            for (int i = 0; i < Math.Min(x.Count, y.Count); i++) {
+                var (p, q) = (x[i].Value.TrimStart('0'), y[i].Value.TrimStart('0'));
+                int c = p.Length != q.Length ? p.Length.CompareTo(q.Length) : string.CompareOrdinal(p, q);
+                if (c != 0) return -c;
+            }
+            return x.Count != y.Count ? -x.Count.CompareTo(y.Count) : -string.CompareOrdinal(Name(a), Name(b));
+        }
+        var builds = Directory.GetDirectories(games).Select(Path.GetFullPath)
+            .Where(d => Directory.EnumerateFiles(d, "*.dll").Any()).ToList();
+        builds.Sort(Newer);
+        if (builds.Count == 0) throw new UsageException($"no game build (a subfolder with DLLs) in {games}");
+        // Two builds with one folder name would be one name in the evidence.
+        if (builds.Concat(game != null ? [Path.GetFullPath(game)] : []).Select(Path.TrimEndingDirectorySeparator).Distinct(StringComparer.Ordinal)
+            .GroupBy(Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice)
+            throw new UsageException($"two game builds are named {twice.Key}: {string.Join(", ", twice)}");
+        var primary = game != null ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(game)) : builds[0];
+        return (game ?? primary, [.. builds.Where(b => !string.Equals(Path.TrimEndingDirectorySeparator(b), primary, StringComparison.Ordinal))]);
     }
 
     static void DeleteWork(string folder) {
@@ -237,10 +286,6 @@ internal static partial class ScanCommand {
         var profileFormat = version["profileFormat"] is JsonValue pf && pf.TryGetValue<int>(out var n) ? n
             : throw new AnalyzerException("darkmatter version gave no profile format (an analyzer older than this pipeline?)");
 
-        // The game: its DLLs (what `darkmatter profile` reads), by name and hash.
-        var gameDlls = Directory.GetFiles(s.Game, "*.dll").Order(StringComparer.Ordinal).ToList();
-        if (gameDlls.Count == 0) throw new UsageException($"no DLLs in the game folder {s.Game}");
-        var gameKey = Sha(string.Join("\n", gameDlls.Select(p => Path.GetFileName(p) + "\t" + ArchiveStore.Hash(p))));
         var profiles = s.Dir("profiles");
         Directory.CreateDirectory(profiles);
         // The analyzer's and the pipeline's own assemblies, by hash: a code change without a version
@@ -248,35 +293,54 @@ internal static partial class ScanCommand {
         var analyzerSha = ArchiveStore.Hash(s.Analyzer.Dll);
         var pipelineSha = PipelineAssemblyHash();
         var toolKey = Sha($"{tool}|{runtime}|{policySha}|{analyzerSha}");
-        var gameProfile = Path.Join(profiles, $"game-{Sha($"{toolKey}|{gameKey}")[..20]}.json");
         string? incomplete = null;
-        // A cached profile is checked before it is used again (--full makes it again anyway); the
-        // library profiles are made with the game profile, so they are made again with it.
-        bool remade = DropCached(gameProfile, "game profile", s.Full ? "--full" : null, p => CachedProfile.GameProblem(p, policySha, profileFormat), log);
-        if (!File.Exists(gameProfile)) {
-            remade = true;
-            log.WriteLine($"game profile: {gameDlls.Count} DLLs in {s.Game}");
+        bool anyReused = false;
+        // The profile of one game build: its DLLs (what `darkmatter profile` reads) by name and hash, and
+        // the profile made from them, kept under the tool and those hashes. `what` names it in messages.
+        (string Profile, string Key, int Dlls, bool Remade) GameBuild(string folder, string what) {
+            var dlls = Directory.GetFiles(folder, "*.dll").Order(StringComparer.Ordinal).ToList();
+            if (dlls.Count == 0) throw new UsageException($"no DLLs in the game folder {folder}");
+            var dllKey = Sha(string.Join("\n", dlls.Select(p => Path.GetFileName(p) + "\t" + ArchiveStore.Hash(p))));
+            var profile = Path.Join(profiles, $"game-{Sha($"{toolKey}|{dllKey}")[..20]}.json");
+            // A cached profile is checked before it is used again (--full makes it again anyway); the
+            // library profiles are made with the game profile, so they are made again with it.
+            bool made = DropCached(profile, what, s.Full ? "--full" : null, p => CachedProfile.GameProblem(p, policySha, profileFormat), log);
+            if (File.Exists(profile)) {
+                anyReused = true;
+                return (profile, dllKey, dlls.Count, made);
+            }
+            log.WriteLine($"{what}: {dlls.Count} DLLs in {folder}");
             var list = Path.Join(profiles, "game-files.txt");
-            File.WriteAllLines(list, gameDlls.Select(Path.GetFullPath));
-            Profile(s, ["profile", "--out", gameProfile + ".part", "@" + list], gameProfile + ".part", "game profile");
+            File.WriteAllLines(list, dlls.Select(Path.GetFullPath));
+            Profile(s, ["profile", "--out", profile + ".part", "@" + list], profile + ".part", what);
             // A game file the analyzer could not read (it may be one being updated, or locked) is left
             // out of the profile, so calls into it count as not analyzed. That may be passing: the
             // profile is used for this run only, not kept under the key, and its results are retried.
-            var skipped = Skipped(gameProfile + ".part");
+            var skipped = Skipped(profile + ".part");
             // A profile just made is checked as a kept one would be next run: one that fails ends this
             // run (it is neither used nor made again in a loop).
-            Fresh(gameProfile + ".part", "game profile", CachedProfile.GameProblem(gameProfile + ".part", policySha, profileFormat, complete: skipped == null));
+            Fresh(profile + ".part", what, CachedProfile.GameProblem(profile + ".part", policySha, profileFormat, complete: skipped == null));
             if (skipped != null) {
-                incomplete = $"the game profile could not read {skipped}";
+                incomplete = $"the {what} could not read {skipped}";
                 log.WriteLine($"warning: {incomplete}; calls into it count as not analyzed, the profile is not kept and results are scanned again next run");
                 Directory.CreateDirectory(s.Work);
-                var temporary = Path.Join(s.Work, Path.GetFileName(gameProfile));
-                File.Move(gameProfile + ".part", temporary, overwrite: true);
-                gameProfile = temporary;
+                var temporary = Path.Join(s.Work, Path.GetFileName(profile));
+                File.Move(profile + ".part", temporary, overwrite: true);
+                profile = temporary;
             } else {
-                File.Move(gameProfile + ".part", gameProfile, overwrite: true);
+                File.Move(profile + ".part", profile, overwrite: true);
             }
+            return (profile, dllKey, dlls.Count, true);
         }
+        static string BuildName(string folder) => Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)));
+        var (gameProfile, gameKey, gameDllCount, remade) = GameBuild(s.Game, "game profile");
+        // The library profiles are made with the current game's profile only: an incomplete one makes them temporary too.
+        bool gameIncomplete = incomplete != null;
+        // The other game builds (--games): a member the current build lacks is looked up in their profiles.
+        // "=" separates the name from the file in the analyzer's option.
+        var others = s.OtherGames.Select(folder => (Name: BuildName(folder).Replace('=', '_'), Build: GameBuild(folder, $"game profile of the other build {Text.Printable(BuildName(folder))}"))).ToList();
+        // Their names are in the evidence, so the key covers them with their DLLs.
+        var othersKey = others.Count == 0 ? "" : "|others:" + Sha(string.Join("\n", others.Select(x => x.Name + "\t" + x.Build.Key)));
         var libraryFiles = trusted
             .Select(h => s.Dir("libraries", h))
             .Where(Directory.Exists)
@@ -287,7 +351,7 @@ internal static partial class ScanCommand {
         if (libraryFiles.Count > 0) {
             libraryProfile = Path.Join(profiles, $"libraries-{Sha($"{toolKey}|{gameKey}|{allowKey}")[..20]}.json");
             // Made with an incomplete game profile, the library profiles are not kept either.
-            if (incomplete != null) libraryProfile = Path.Join(s.Work, Path.GetFileName(libraryProfile));
+            if (gameIncomplete) libraryProfile = Path.Join(s.Work, Path.GetFileName(libraryProfile));
             DropCached(libraryProfile, "library profile", s.Full ? "--full" : remade ? "the game profile was made again" : null,
                 p => CachedProfile.LibraryProblem(p, policySha, profileFormat), log);
             if (!File.Exists(libraryProfile)) {
@@ -304,7 +368,10 @@ internal static partial class ScanCommand {
         var pipeline = PipelineVersion;
         // The extraction limits decide whether a large archive counts as extracted (Broad access if not).
         var limits = s.Limits;
-        var key = Sha($"{pipeline}|{pipelineSha}|{toolKey}|{gameKey}|{allowKey}|{limits.MaxDepth}|{limits.MaxBytes}|{limits.MaxFiles}");
+        var key = Sha($"{pipeline}|{pipelineSha}|{toolKey}|{gameKey}{othersKey}|{allowKey}|{limits.MaxDepth}|{limits.MaxBytes}|{limits.MaxFiles}");
+        var gameStamp = new JsonObject { ["folder"] = BuildName(s.Game), ["sha256"] = gameKey, ["dlls"] = gameDllCount };
+        if (others.Count > 0)
+            gameStamp["others"] = new JsonArray([.. others.Select(x => (JsonNode)new JsonObject { ["folder"] = x.Name, ["sha256"] = x.Build.Key, ["dlls"] = x.Build.Dlls })]);
         var stamp = new JsonObject {
             ["key"] = key,
             ["tool"] = tool,
@@ -312,13 +379,15 @@ internal static partial class ScanCommand {
             ["runtime"] = runtime,
             ["build"] = new JsonObject { ["analyzer"] = analyzerSha, ["pipeline"] = pipelineSha },
             ["policy"] = version["policy"]!.DeepClone(),
-            ["game"] = new JsonObject { ["folder"] = Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(s.Game))), ["sha256"] = gameKey, ["dlls"] = gameDlls.Count },
+            ["game"] = gameStamp,
             ["allowlist"] = new JsonObject { ["sha256"] = allowKey, ["files"] = trusted.Count, ["unverified"] = built.Failed },
             ["extraction"] = new JsonObject { ["maxDepth"] = limits.MaxDepth, ["maxBytes"] = limits.MaxBytes, ["maxFiles"] = limits.MaxFiles },
         };
         // A profile kept from an earlier run passed the structural check, but the analyzer may still reject it.
-        bool reused = !remade || (libraryProfile != null && !libraryMade);
-        return new Context(snapshot, store, allowlist, libraryProfile, gameProfile, key, stamp, incomplete, reused);
+        bool reused = anyReused || (libraryProfile != null && !libraryMade);
+        return new Context(snapshot, store, allowlist, libraryProfile, gameProfile, key, stamp, incomplete, reused) {
+            OtherGameProfiles = [.. others.Select(x => x.Name + "=" + x.Build.Profile)],
+        };
     }
 
     /// <summary>SHA-256 of the pipeline's own assembly (the running program when it is a single file).</summary>
@@ -386,13 +455,14 @@ internal static partial class ScanCommand {
                 if (release == null)
                     why = listing.Releases.Count == 0 ? "no usable release in the snapshot" : "every release is yanked";
             }
-            var e = new Entry { Id = listing.Id, Name = listing.Name, Release = release };
+            var e = new Entry { Id = listing.Id, Name = listing.Name, Type = listing.Type, Release = release };
             if (release == null) {
                 e.Status = "skipped";
                 e.Reason = why;
             } else if (!s.Full && LoadResult(s, release) is { } stored && Reusable(stored, ctx, release)) {
                 e.Status = "cached";
                 e.Result = stored["result"]?.DeepClone();
+                e.StoredText = e.Result?.ToJsonString();
             }
             entries.Add(e);
         }
@@ -440,7 +510,14 @@ internal static partial class ScanCommand {
         } catch (Exception x) when (!Fatal(x)) {
             foreach (var e in ready.Where(e => e.Status == "pending")) Fail(e, $"the analyzer could not be run: {Describe(x)}", log);
         }
-        foreach (var e in pending.Where(e => e.Status == "scanned")) {
+        // Required dependencies (see Dependencies.cs): each result gets its dependencies' tiers, labels and
+        // reasons, from this run's results, or from the last stored one for a listing this run does not scan.
+        // (Read only when a dependency is not in this run, and never moved aside: a run that does not record
+        // its results leaves latest.json alone, damaged or not.)
+        var latestForDependencies = new Lazy<JsonObject>(() => updateLatest ? latest : ReadLatest(latestPath));
+        ApplyDependencies(entries, id => StoredLatest(s, latestForDependencies.Value, id));
+        // (A result kept from an earlier run is stored again when a dependency changed what it says.)
+        foreach (var e in entries.Where(e => e.Status == "scanned" || (e.Status == "cached" && e.Result != null && e.Result.ToJsonString() != e.StoredText))) {
             try {
                 StoreResult(s, ctx, e);
             } catch (Exception x) when (!Fatal(x)) {
@@ -522,6 +599,7 @@ internal static partial class ScanCommand {
         File.Delete(results);
         Text.WriteJson(manifest, new { root, mods = entries.ToDictionary(e => e.Id, e => e.Manifest!) });
         List<string> args = ["analyze", "--manifest", manifest, "--allowlist", ctx.Allowlist, "--game-profile", ctx.GameProfile, "--json", results];
+        foreach (var other in ctx.OtherGameProfiles) args.AddRange(["--other-game-profile", other]);
         if (ctx.LibraryProfile != null) args.AddRange(["--library-profile", ctx.LibraryProfile]);
         Console.Error.WriteLine($"analyzing {entries.Count} mod(s)");
         var (exit, _, stderr) = s.Analyzer.Run(args);
@@ -607,6 +685,15 @@ internal static partial class ScanCommand {
         return [];
     }
 
+    /// <summary>latest.json as it is, or nothing when it is missing or cannot be read: it is left where it is.</summary>
+    static JsonObject ReadLatest(string path) {
+        try {
+            return File.Exists(path) && Text.ParseStored(File.ReadAllBytes(path)) is JsonObject latest ? latest : [];
+        } catch (Exception x) when (x is IOException or UnauthorizedAccessException or JsonException or ArgumentException) {
+            return [];
+        }
+    }
+
     /// <summary>Why a result does not belong to the manifest it was meant for (its files are not the extracted ones); null when it does.</summary>
     static string? FilesMismatch(JsonObject result, ManifestMod manifest) {
         var files = (result["files"] as JsonArray ?? []).OfType<JsonObject>().ToList();
@@ -674,6 +761,8 @@ internal static partial class ScanCommand {
         ["loader"] = r.Loader,
         ["gameMin"] = r.GameMin,
         ["gameMax"] = r.GameMax,
+        ["dependencies"] = r.Dependencies.Count == 0 ? null
+            : new JsonArray([.. r.Dependencies.Select(d => (JsonNode)new JsonObject { ["id"] = d.Id, ["kind"] = d.Kind, ["min"] = d.Min })]),
     };
 
     static JsonObject SnapshotJson(Snapshot s) {
@@ -701,6 +790,7 @@ internal static partial class ScanCommand {
                 ["name"] = e.Name,
                 ["status"] = e.Status,
             };
+            if (e.Type is { Length: > 0 }) o["type"] = e.Type;
             if (e.Release != null) o["release"] = ReleaseJson(e.Release, e.Name);
             if (e.Identity != null) o["local"] = e.Identity.DeepClone();
             if (e.Reason != null) o["reason"] = e.Reason;

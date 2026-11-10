@@ -84,7 +84,9 @@ internal sealed record LibraryProfile(
                 foreach (var e in whole) s.TryAdd(e.Cap, e.Detail);
                 foreach (var n in unanalyzedRefs) s.TryAdd("unanalyzed-call", $"{a.Name} references {n}");
                 foreach (var d in m.UnresolvedReflection) s.TryAdd("unresolved-reflection", d);
-                foreach (var b in m.BoundedReflection) s.TryAdd(access.Bounded(b.Type, b.Assembly) ? "bounded-reflection" : "unresolved-reflection", b.Detail);
+                foreach (var b in m.BoundedReflection)
+                    if (access.Bounded(b.Type, b.Assembly)) foreach (var (cap, detail) in access.BoundedReach(b.Type, b.Assembly, b.Detail, b.Member)) Seed(m, cap, detail);
+                    else s.TryAdd("unresolved-reflection", b.Detail);
                 foreach (var (t, d) in m.TypedByName.Where(x => !access.IsGame(x.Type, null, derived: false))) s.TryAdd("unresolved-reflection", d);
                 foreach (var d in m.ComActivation) s.TryAdd("com-activation", d);
                 if (m.DecodeFailed) s.TryAdd("decode-failure", m.Name);
@@ -107,11 +109,12 @@ internal sealed record LibraryProfile(
             }
         }
         var unresolved = new List<(MethodFacts, string)>();
-        var bounded = new List<(MethodFacts, string)>();
+        var bounded = new List<(MethodFacts, string, string, string?, bool)>();
         var fieldCaps = new List<(MethodFacts, Evidence)>();
         provenance.Resolve(unresolved, bounded, fieldCaps);
         foreach (var (m, d) in unresolved) Reach.Of(seeds, m.Key).TryAdd("unresolved-reflection", d);
-        foreach (var (m, d) in bounded) Reach.Of(seeds, m.Key).TryAdd("bounded-reflection", d);
+        foreach (var (m, d, type, assembly, member) in bounded)
+            foreach (var (cap, detail) in access.BoundedReach(type, assembly, d, member)) Seed(m, cap, detail);
         foreach (var (m, e) in fieldCaps) Seed(m, e.Cap, e.Detail);
 
         // Node keys start with the assembly name; exemptions name the library by allowlist name.

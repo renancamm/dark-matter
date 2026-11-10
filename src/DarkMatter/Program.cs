@@ -15,6 +15,8 @@ internal static class Program {
                                    without it, all FILEs form one mod
               --name NAME          mod name when FILEs are given directly (default: mod)
               --game-profile FILE  game-API capability map from `darkmatter profile`
+              --other-game-profile [NAME=]FILE  the map of another build of the game (repeatable):
+                                   a game member the --game-profile build lacks is looked up there
               --library-profile FILE  trusted-library profiles from `darkmatter profile --library`;
                                    without it, calls into trusted libraries count as not analyzed
               --policy FILE        policy file (default: the built-in policy/policy.jsonc)

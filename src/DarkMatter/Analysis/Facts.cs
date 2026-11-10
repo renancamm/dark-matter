@@ -69,12 +69,14 @@ internal sealed record FieldReflection(string Node, string Detail, bool Invokes,
 /// Reflection whose target the walker could not trace to one member, but only to a type or any type
 /// derived from it (the run-time type of an object of that declared type), or to any type of one
 /// assembly (Assembly.GetType of a name built at run time). The Evaluator decides by where the type
-/// lives: the game's or the mod's code is bounded (deep game access), anything else is unresolved.
+/// lives: the game's or the mod's code is bounded (a label since policy 38; any type of an assembly stays
+/// deep game access), anything else is unresolved.
 /// </summary>
 /// <param name="Type">"Namespace.Type", or "*" for any type of <paramref name="Assembly"/>.</param>
 /// <param name="Assembly">As in <see cref="ReflectedType.Assembly"/>.</param>
 /// <param name="Detail">Evidence text.</param>
-internal sealed record BoundedReflection(string Type, string? Assembly, string Detail);
+/// <param name="Member">A member looked up by name on the type (the lookup gave what members of that name can do), not the type alone.</param>
+internal sealed record BoundedReflection(string Type, string? Assembly, string Detail, bool Member = false);
 
 /// <summary>
 /// Node ids for values the walker traces across methods: "field:KEY" (a Type or member field),
@@ -84,7 +86,13 @@ internal sealed record BoundedReflection(string Type, string? Assembly, string D
 /// A source "member:NODE" stands for the members of the types NODE holds, which were looked up
 /// (and their capabilities granted) where the lookup was.
 internal static class Nodes {
-    public const string FieldPrefix = "field:", ArgPrefix = "arg:", ReturnPrefix = "ret:", MemberPrefix = "member:", InstancePrefix = "inst:";
+    public const string FieldPrefix = "field:", ArgPrefix = "arg:", ReturnPrefix = "ret:", MemberPrefix = "member:", InstancePrefix = "inst:", ObjectArgPrefix = "objarg:";
+    /// <summary>
+    /// The run-time types of the objects passed for a parameter declared as object of method KEY (policy 42, D8): from
+    /// every call the analyzed code makes, what the value passed is declared as (that type or a derived one), or the
+    /// types another such node holds. Traced only for a method nothing outside the analyzed code can call.
+    /// </summary>
+    public static string ObjectArg(string key, int index) => $"{ObjectArgPrefix}{key}#{index}";
     public static string MemberOf(string node) => node.StartsWith(MemberPrefix, StringComparison.Ordinal) ? node : MemberPrefix + node;
     public static string Field(string key) => FieldPrefix + key;
     public static string Arg(string key, int index) => index < 0 ? $"{ArgPrefix}{key}#*" : $"{ArgPrefix}{key}#{index}";
@@ -125,10 +133,11 @@ internal static class Nodes {
             if (node.StartsWith(MemberPrefix, StringComparison.Ordinal)) { node = node[MemberPrefix.Length..]; stripped = true; }
         }
         if (node.StartsWith(InstancePrefix, StringComparison.Ordinal)) return node[InstancePrefix.Length..];
-        if (node.StartsWith(ArgPrefix, StringComparison.Ordinal)) {
-            int hash = node.LastIndexOf('#');
-            return node[ArgPrefix.Length..(hash > 0 ? hash : node.Length)];
-        }
+        foreach (var prefix in new[] { ArgPrefix, ObjectArgPrefix })
+            if (node.StartsWith(prefix, StringComparison.Ordinal)) {
+                int hash = node.LastIndexOf('#');
+                return node[prefix.Length..(hash > 0 ? hash : node.Length)];
+            }
         return node.StartsWith(FieldPrefix, StringComparison.Ordinal) ? node[FieldPrefix.Length..]
             : node.StartsWith(ReturnPrefix, StringComparison.Ordinal) ? node[ReturnPrefix.Length..] : node;
     }
@@ -142,6 +151,7 @@ internal static class Nodes {
         var name = key[(key.IndexOf('|', StringComparison.Ordinal) + 1)..];
         if (node.StartsWith(InstancePrefix, StringComparison.Ordinal)) return $"the run-time type of the __instance Harmony passes to {name}";
         if (node.StartsWith(ArgPrefix, StringComparison.Ordinal)) return $"argument {node[(node.LastIndexOf('#') + 1)..]} of {name}";
+        if (node.StartsWith(ObjectArgPrefix, StringComparison.Ordinal)) return $"the run-time type of the object passed as argument {node[(node.LastIndexOf('#') + 1)..]} of {name}";
         if (node.StartsWith(ReturnPrefix, StringComparison.Ordinal)) return $"what {name} returns";
         return name;
     }
@@ -165,8 +175,12 @@ internal static class Nodes {
 /// (see <c>MethodWalker.OnlyNullTested</c>): a name nothing has finds no type and runs nothing (H9).</param>
 /// <param name="Derived">The type is known only up to its derived types (the run-time type of a value of that
 /// declared type): the members of the game's types that derive from it are reached too (D9).</param>
+/// <param name="Handoff">The lookup found a method of the mod only to hand it to Harmony as a patch method (see
+/// <see cref="ManualPatch"/>): nothing else got hold of it, so it does not count as a way to call that method with
+/// an instance of the mod's choosing (R3). Everything else about the lookup counts as for any other.</param>
 internal sealed record ReflectedType(string Type, string? Assembly, IReadOnlyList<string>? Members, string Detail, bool PatchTarget = false,
-    string? NameNode = null, string? Lookup = null, PatchEffect Patch = PatchEffect.Changes, bool NullTestOnly = false, bool Derived = false);
+    string? NameNode = null, string? Lookup = null, PatchEffect Patch = PatchEffect.Changes, bool NullTestOnly = false, bool Derived = false,
+    bool Handoff = false);
 
 /// <summary>What the patch methods of a Harmony patch can do to the member they patch.</summary>
 internal enum PatchEffect {
@@ -205,7 +219,28 @@ internal enum MemberKind { Field, Property, Method }
 /// <param name="Kind">The kind of member the lookup finds.</param>
 /// <param name="Type">"Namespace.Type" of the declared type (a generic instantiation as its definition).</param>
 /// <param name="Asm">The assembly it lives in ("" when that cannot be determined).</param>
-internal readonly record struct MemberValue(MemberKind Kind, string Type, string Asm);
+/// <param name="Sole">For a method (policy 42, R3): its name as declared, when the type the lookup was made on declares
+/// methods of that name and none of its base types does, in any casing (see <c>AssemblyWalker.SoleMethod</c>): the
+/// method found then runs only on instances of that type or of types derived from it. Null otherwise.
+/// <paramref name="Type"/> is "" when only this is known and the declared type is not.</param>
+internal readonly record struct MemberValue(MemberKind Kind, string Type, string Asm, string? Sole = null) {
+    /// <summary>Whether the declared type is known (not only <see cref="Sole"/>).</summary>
+    public bool Typed => Type.Length > 0;
+}
+
+/// <summary>
+/// A Harmony patch applied by hand (policy 42, R3): a HarmonyMethod this code made for a method of the mod,
+/// followed on the stack (or through a local that holds nothing else) into <c>Harmony.Patch</c> as its prefix, postfix
+/// or finalizer and nowhere else. Harmony then calls that method with the instance the original runs on, and fills
+/// its other parameters from the original by name (see <see cref="MethodFacts.PatchParameters"/>). Recorded only when nothing else could have taken
+/// the HarmonyMethod (see MethodWalker's handoffs).
+/// </summary>
+/// <param name="Method">The patch method's key ("Assembly|Type::Name").</param>
+/// <param name="Originals">The members the original can be, when the walker traced it to members; null otherwise.</param>
+/// <param name="OriginalNode">The node (see <see cref="Nodes"/>) the original comes from, resolved per mod; null otherwise.
+/// With neither, the original is not traced: the instance can be any object.</param>
+/// <param name="Detail">Evidence text.</param>
+internal sealed record ManualPatch(string Method, IReadOnlyList<HeldType>? Originals, string? OriginalNode, string Detail);
 
 /// <summary>
 /// A file operation and where its path comes from, as a set of path atoms: an origin ("own",
@@ -303,6 +338,12 @@ internal sealed class MethodFacts {
     /// <summary>The method has no IL body here (abstract, extern, runtime-provided): it returns nothing the check sees.</summary>
     public bool Bodiless { get; set; }
     public List<string> UnresolvedReflection { get; } = [];
+    /// <summary>
+    /// Only when the analysis explains itself (<c>analyze --facts</c>): for each untraced value at a reflection sink,
+    /// and each untraced value given to a Type or member node, what it is and what produced it (see <see cref="Slot.Why"/>).
+    /// For the facts output; no result reads it.
+    /// </summary>
+    public List<(string What, string Why)> Untraced { get; } = [];
     /// <summary>Reflection traced only to a type or its derived types, or to an assembly (see <see cref="BoundedReflection"/>).</summary>
     public List<BoundedReflection> BoundedReflection { get; } = [];
     /// <summary>
@@ -332,6 +373,25 @@ internal sealed class MethodFacts {
     /// <summary>Nodes this method gives an untraced value, or whose value it can change through an address or a delegate.</summary>
     public HashSet<string> UntrackedStores { get; } = [];
     public List<FieldReflection> FieldReflection { get; } = [];
+    /// <summary>Harmony patches this method applies by hand with a method of the mod (see <see cref="ManualPatch"/>).</summary>
+    public List<ManualPatch> ManualPatches { get; } = [];
+    /// <summary>
+    /// What Harmony passes for each argument of this method that is declared as object, when Harmony calls the method
+    /// as a prefix, postfix or finalizer (policy 43, R10): by argument index, <see cref="PatchParameter.Result"/> (the
+    /// original's result, <c>__result</c>), <see cref="PatchParameter.Index"/> (the original's parameter N, <c>__N</c>)
+    /// or <see cref="PatchParameter.Name"/> (the original's parameter of that name). Only the parameters Harmony
+    /// fills from the original's signature alone are listed (see <c>AssemblyWalker.PatchParameters</c>); for any
+    /// other the check does not know what Harmony passes.
+    /// </summary>
+    public IReadOnlyDictionary<int, string> PatchParameters { get; set; } = new Dictionary<int, string>();
+    /// <summary>
+    /// What this method could replace if Harmony called it as a patch (policy 44): for each by-reference parameter
+    /// Harmony would hand the address of something of the original's, what that is (<see cref="PatchParameter.Instance"/>,
+    /// <see cref="PatchParameter.Result"/>, a parameter by name or by index, or <see cref="PatchParameter.Any"/> when
+    /// the check cannot tell). Harmony does not compare the types, so the value stored can be any object. Listed
+    /// for every static method; whether Harmony can call it is decided per mod.
+    /// </summary>
+    public IReadOnlyList<string> PatchReplaces { get; set; } = [];
     /// <summary>Types whose fields this method writes through reflection; "*" when the type is not known,
     /// "Namespace.Type+" for that type or any type derived from it.</summary>
     public HashSet<string> ReflectionFieldWrites { get; } = [];
@@ -427,7 +487,9 @@ internal sealed class AssemblyFacts {
     /// finds: per type ("Namespace.Outer/Inner"), per member ("field:Name", "property:Name", "method:Name"), the
     /// declared type as "Namespace.Type|Assembly", or <see cref="MemberTypes.Unknown"/> when it is not a class or
     /// struct, or when members of that kind and name disagree (overloads, a property whose getter returns
-    /// another type). The game-API map carries the game's (profile format 7).
+    /// another type). The game-API map carries the game's (profile format 7). Also the declared types of each
+    /// method's parameters, by name and by index (<see cref="MemberTypes.ParameterKey"/>; the game-API map carries
+    /// the known ones since format 8).
     /// </summary>
     public Dictionary<string, Dictionary<string, string>> MemberTypes { get; } = [];
 
@@ -435,8 +497,66 @@ internal sealed class AssemblyFacts {
 }
 
 
+/// <summary>How Harmony fills a patch method's parameter from the original (see <see cref="MethodFacts.PatchParameters"/>).</summary>
+internal static class PatchParameter {
+    /// <summary>The original's result (<c>__result</c>).</summary>
+    public const string Result = "result";
+    /// <summary>The instance the original runs on (<c>__instance</c>).</summary>
+    public const string Instance = "instance";
+    /// <summary>Any of the original's parameters: the check cannot tell which.</summary>
+    public const string Any = "*";
+
+    /// <summary>
+    /// Whether a patch method that replaces <paramref name="replaced"/> (see <see cref="MethodFacts.PatchReplaces"/>)
+    /// can change what Harmony passes for <paramref name="passed"/> on one original: the same thing, or the same
+    /// parameter. A name and an index are the same parameter unless the original is known to have the name at
+    /// another index (<paramref name="position"/>: the index of a named parameter of the original, null when not known).
+    /// </summary>
+    public static bool Replaces(string replaced, string passed, Func<string, int?> position) {
+        if (replaced == Instance || passed == Instance || replaced == Result || passed == Result) return replaced == passed;
+        if (replaced == Any) return true;
+        int? At(string parameter) => parameter.StartsWith('#')
+            ? int.TryParse(parameter.AsSpan(1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : null
+            : position(parameter[1..]);
+        if (!replaced.StartsWith('#') && !passed.StartsWith('#')) return replaced == passed;
+        return At(replaced) is not { } a || At(passed) is not { } b || a == b;
+    }
+    /// <summary>The original's parameter at an index (<c>__0</c>, <c>__1</c>, ...).</summary>
+    public static string Index(int index) => "#" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>The original's parameter of a name.</summary>
+    public static string Name(string name) => "=" + name;
+
+    /// <summary>The member-type key (see <see cref="MemberTypes"/>) that types this parameter for the original method <paramref name="method"/>.</summary>
+    public static string TypeKey(string method, string parameter) =>
+        parameter == Result ? MemberTypes.Key(MemberKind.Method, method)
+        : parameter.StartsWith('#') ? MemberTypes.ParameterKey(method, parameter)
+        : MemberTypes.ParameterKey(method, parameter[1..]);
+
+    /// <summary>Evidence text: "the result", "parameter 0", "the parameter x".</summary>
+    public static string Describe(string parameter) =>
+        parameter == Result ? "the result" : parameter.StartsWith('#') ? "parameter " + parameter[1..] : "the parameter " + parameter[1..];
+}
+
 /// <summary>The encoding of <see cref="AssemblyFacts.MemberTypes"/> and of the game-API map's "memberTypes" (D2).</summary>
 internal static class MemberTypes {
+    /// <summary>
+    /// The key of a method's parameter (policy 43, R10; profile format 8): "param:Method:name" for the parameters of
+    /// that name, "param:Method:#N" for the parameters at index N, over every method of that name the type declares
+    /// (overloads that disagree make it <see cref="Unknown"/>, as for any other key; so do two keys that happen to
+    /// read the same). <see cref="ParseKey"/> does not read these: they are no member a lookup finds.
+    /// </summary>
+    public static string ParameterKey(string method, string parameter) => $"{ParameterPrefix}{method}:{parameter}";
+    /// <summary>
+    /// The key of where a method's parameters of a name are (policy 44): "param:Method:@name", whose value is "#N" when
+    /// every method of that name the type declares has the name at index N (and <see cref="Unknown"/> otherwise).
+    /// </summary>
+    public static string ParameterPositionKey(string method, string name) => ParameterKey(method, "@" + name);
+    /// <summary>The index a <see cref="ParameterPositionKey"/> value gives, or null.</summary>
+    public static int? Position(string? value) => value is ['#', .. var digits]
+        && int.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : null;
+    public const string ParameterPrefix = "param:";
+    public static bool IsParameterKey(string key) => key.StartsWith(ParameterPrefix, StringComparison.Ordinal);
+
     /// <summary>A member whose declared type is not a class or struct, or not one type.</summary>
     public const string Unknown = "?";
 

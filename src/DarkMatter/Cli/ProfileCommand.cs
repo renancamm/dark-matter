@@ -88,7 +88,19 @@ internal static class ProfileCommand {
                 if (!merged.ContainsKey(type)) merged[type] = new(StringComparer.Ordinal);
                 foreach (var (key, value) in members) MemberTypes.Add(merged, type, key, value);
             }
-        return new(merged.ToDictionary(kv => kv.Key, kv => new SortedDictionary<string, string>(kv.Value, StringComparer.Ordinal), StringComparer.Ordinal), StringComparer.Ordinal);
+        // A parameter whose type is not known is left out (absent means unknown for a parameter, R10): most are
+        // primitives, and listing them would double the map. So is where such a parameter is ("param:M:@name"),
+        // which is only read for a parameter that is typed.
+        bool Kept(Dictionary<string, string> members, KeyValuePair<string, string> m) {
+            if (!MemberTypes.IsParameterKey(m.Key)) return true;
+            if (m.Value == MemberTypes.Unknown) return false;
+            if (MemberTypes.Position(m.Value) == null) return true;
+            int at = m.Key.LastIndexOf(":@", StringComparison.Ordinal);
+            return at > 0 && members.TryGetValue(string.Concat(m.Key.AsSpan(0, at + 1), m.Key.AsSpan(at + 2)), out var type) && type != MemberTypes.Unknown && MemberTypes.Position(type) == null;
+        }
+        return new(merged.ToDictionary(kv => kv.Key, kv => new SortedDictionary<string, string>(
+            kv.Value.Where(m => Kept(kv.Value, m)).ToDictionary(m => m.Key, m => m.Value, StringComparer.Ordinal),
+            StringComparer.Ordinal), StringComparer.Ordinal), StringComparer.Ordinal);
     }
 
     static int Library(Options o, string output, Policy policy) {

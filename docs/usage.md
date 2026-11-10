@@ -45,7 +45,7 @@ and library profiles, one result per release (`results/<id>/<sha256>.json`) and 
 run (`runs/`). The allowlist comes from the snapshot's mod loaders, and the profiles are made as
 needed, so there is nothing to prepare but the game folder. A release whose stored result has the
 current scan key (tool and pipeline versions and the SHA-256 of their assemblies, the .NET
-runtime, policy, game DLLs, the allowlist's hashes and names, and the extraction limits) is not
+runtime, policy, game DLLs, the other game builds, the allowlist's hashes and names, and the extraction limits) is not
 scanned again: a second
 run rescans nothing, and a change of policy, tool or pipeline build, game build or a loader
 release rescans everything. A release whose download URL now names another file is scanned
@@ -80,7 +80,9 @@ Output is text (`--format text`, the default: the counts, the changes, what was 
 the results of new and changed listings; `--all` for every listing, `-v` for evidence) or the run
 document as JSON (`--format json`), which holds every result with every piece of evidence.
 `report` renders a run document, or a results file of `darkmatter analyze --json`, as one
-self-contained HTML page with no script, to share with people who do not run the tool. Every
+self-contained HTML page with no script, to share with people who do not run the tool. A listing
+of type `mod-loader` is listed apart from the mods and left out of their tier counts (pipeline 0.3.10);
+its result is unchanged. Every
 string in it is HTML-encoded, with control and format characters (bidirectional overrides,
 zero-width characters) shown as `\uXXXX` escapes as in the text output, and its
 Content-Security-Policy allows no script and only the page's own style sheet (by hash): names and
@@ -97,6 +99,53 @@ dotnet out/darkmatter-pipeline.dll scan mod path/to/MyMod --game path/to/game  #
 A listing id is scanned like a listing of the index (a yanked version is refused). Local files,
 such as a build before release, are copied or extracted with the same rules as an archive; they
 have no stamp, so they are identified by their files' hashes and their result is not stored.
+
+## Several game builds
+
+```sh
+dotnet out/darkmatter-pipeline.dll scan index --games path/to/builds
+dotnet out/darkmatter-pipeline.dll scan index --games path/to/builds --game path/to/builds/ksa_v2026.11.10.5801
+```
+
+`--games DIR` takes a folder of game builds. Each subfolder with DLLs in it is one build.
+
+| Options | Build the mods are checked against | Other builds |
+|---|---|---|
+| `--game DIR` | that folder | none |
+| `--games DIR` | the newest subfolder, by the numbers in the folder names | the other subfolders |
+| `--games DIR --game DIR2` | `DIR2` | every subfolder of `DIR` but `DIR2` |
+
+A mod built for another game version calls game members the current build does not define. With
+other builds, such a call is looked up in each of them. When one defines the member, the call
+reaches what that build's game-API map lists for it, and the result carries a warning that names
+the builds. A member no build defines is code that was not analyzed. Only direct calls and field
+references are looked up: reflection on such a member, and a Harmony patch of one, are not.
+
+The scan makes one game profile per build. The scan key covers every build's DLLs and folder
+names, and the run's stamp lists the other builds under `game.others`. The same works with
+`scan mod`.
+
+## Dependencies
+
+A release can name other mods it requires. Installing the mod installs them. The scan notes each
+one in the mod's result with the tier of its own result. The mod's tier, labels and reasons stay
+those of its own code.
+
+| In the result | What it holds |
+|---|---|
+| `tier`, `labels`, `broadAccess` | The mod's own code, as without dependencies |
+| `dependencies` | Each required mod, directly or through another: its release, its own tier (`tier`, `tierName`), `status`, and `through` when another dependency requires it |
+
+The text output shows a line `Requires ID VERSION: TIER` under the mod, and the report shows the
+same in the mod's row and card. Only `required` dependencies are noted; a recommended or suggested
+mod is the player's choice. The release noted is the one the run scanned (the newest). `scan mod ID`
+uses the dependency's last stored result. A required mod with no result is noted as not scanned.
+
+Beside a Broad access tier, the text output and the report show the number of reasons in the mod's
+code.
+
+Until pipeline 0.3.10 a required mod raised the tier, and the result kept the mod's own tier under
+`own`. Stored results of that form are read as the mod's own.
 
 ## Results
 
@@ -118,13 +167,17 @@ dotnet out/darkmatter.dll analyze --allowlist allowlist.json --library-profile l
     --game-profile game-api-profile.json --name MyMod path/to/mod/*.dll
 ```
 
+`analyze` also takes `--other-game-profile NAME=FILE`, once per other game build: the profile of
+that build, and the name the evidence gives it.
+
 `scan` runs these itself. `build-allowlist` writes the allowlist alone, and `--library-dir`
 writes every trusted file to `libraries/<sha256>/`; `profile --library` profiles them (only files
 whose hash is on the allowlist). Without `--library-profile`, every call into a trusted library
 counts as code that was not analyzed. Profiles record the policy they were made with, and one
 made with another policy is refused. `analyze` takes `-v` for the evidence, `--json FILE` for
 machine-readable results, `--facts FILE` for the per-file analysis facts (what the analyzer
-observed before the policy was applied, for detection work), `--manifest FILE` for several mods,
+observed before the policy was applied, for detection work; its `untraced` list says, for each
+reflection value the check could not trace, what produced it), `--manifest FILE` for several mods,
 and `@listfile` inputs, one path per line. `darkmatter version` prints the stamp results carry, and the profile format
 (`profileFormat`) this build writes.
 
@@ -174,4 +227,6 @@ capability tags it holds the game's assembly, type and member names, each type's
 (format 6, policy 34) the game's `[InlineArray]` types with their length and element type, so a
 mod's compiler-generated helper over one of them can be checked against the game's own layout, and
 (format 7, policy 35) the declared type of each member and the interfaces of each type (type names
-only), so a value a mod reads by reflection from a game member can be typed.
+only), so a value a mod reads by reflection from a game member can be typed. Format 8 (policy 43) adds
+the declared type of each method's parameters where it is a class or struct, and the index of each
+(parameter and type names only), so what Harmony passes a patch method can be typed.

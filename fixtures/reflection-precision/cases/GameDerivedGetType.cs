@@ -3,6 +3,7 @@
 // it, so a private method of that type found by name is called with any argument. Expected: Broad access with
 // "Uses reflection the check cannot trace" besides the bounded game reflection (before: only the bounded
 // reason; the method's Type argument was traced to its one direct call).
+// Policy 38: reflection bounded to a game type is the label "Uses the game's internals by reflection", not a Broad-access reason.
 using System;
 using System.Reflection;
 

@@ -3,6 +3,7 @@
 // exactly a game type, declared as a game class, is of that class or a type derived from it, as GetType() of a
 // game-typed value is. Expected: Broad access, deep game access only (before: "Uses reflection the check cannot
 // trace", the value was an object of any type).
+// Policy 38: reflection bounded to a game type is the label "Uses the game's internals by reflection", not a Broad-access reason.
 public static class ValueFieldGame {
     public static void Go() {
         var current = typeof(KSA.Universe).GetField("Current")!.GetValue(KSA.Universe.Instance)!;

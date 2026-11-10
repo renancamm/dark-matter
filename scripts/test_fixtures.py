@@ -200,14 +200,53 @@ HARMONY_PATCH = {
     # access before: "Uses reflection the check cannot trace"). Near misses keep "Uses reflection the check cannot
     # trace": a TargetMethod, a method the named type only inherits, the mod's own call to the patch method, the
     # patch method handed to Harmony again by name, __instance overwritten, [HarmonyArgument] on it.
-    "InstanceGame": [("tier", "broad-access"), ("groups", {DEEP: ["Uses reflection on the game's or its own code that the check cannot fully follow"]}),
-                     ("label", "Uses your clipboard")],
+    "InstanceGame": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
     "InstanceTargetMethod": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "InstanceInherited": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "InstanceCalled": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "InstanceManual": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "InstanceReassigned": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "InstanceRenamed": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    # R3 (policy 42): a patch applied by hand. __instance is bounded by the original Harmony.Patch is given, when the
+    # HarmonyMethod is made in that call and the original is one method its type alone declares.
+    "ManualInstanceGame": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualInstanceLocal": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualInstanceInherited": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualInstanceKept": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualInstanceAlsoInvoked": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualInstanceUntraced": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualInstanceBaseHook": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualInstanceTranspiler": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    # Policy 44: the HarmonyMethod of a patch applied by hand may wait in a local that holds nothing else and is loaded
+    # only into Harmony.Patch. Near misses: the local is passed elsewhere, holds one of two, has its address taken,
+    # or is tested for null.
+    "ManualHandoffLocal": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualHandoffLocalPassed": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualHandoffLocalTwo": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualHandoffLocalRef": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualHandoffLocalTested": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    # R10 (policy 43): the other parameters of a patch applied by hand, declared as object. Harmony fills each by its
+    # name from the original (a parameter's name, __N, __result), so its type is what the original's signature says.
+    # Near misses: overloads that disagree, a name the original lacks, a number, __state, [HarmonyArgument], a
+    # pass-through postfix's first parameter, a public patch method, the mod's own call with an untyped value.
+    "ManualParameterGame": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualParameterResult": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualParameterIndex": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection"])],
+    "ManualParameterNode": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualParameterOwn": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualParameterOverloads": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterMissing": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterNumber": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterState": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterRenamed": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterPassThrough": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterPublic": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    # A patch method that takes the same thing by reference can store any object there (Harmony does not compare types).
+    "ManualParameterReplaced": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterIndexReplaced": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterOtherReplaced": [("tier", "limited-access"), ("labels", ["Changes how the game works", "Uses the game's internals by reflection", "Uses your clipboard"])],
+    "ManualInstanceReplaced": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ManualParameterAlsoCalled": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     # D7 review: an internal method handed to Harmony by name gets the patched method's arguments too (before policy
     # 35 its path parameter was traced from the mod's own call only: no "outside the game" label).
     "ManualPatchPath": [("tier", "limited-access"), ("label", "Changes files outside the game"), ("label", "Changes files in its own or the game's folders")],
@@ -215,14 +254,23 @@ HARMONY_PATCH = {
 
 # Reflection the check traces since policy 10 (fixtures/reflection-precision/cases/<case>.cs): benign
 # controls, analyzed like the Harmony patch fixtures. Same form as EVASION.
-BOUNDED = "Uses reflection on the game's or its own code that the check cannot fully follow"
+# Policy 38: reflection bounded to a game or mod type is a label; bounded only to a game assembly, a Broad-access reason.
+BOUNDED = "Uses the game's internals by reflection"
+GAME_WIDE = "Uses reflection on a game type chosen at run time, which the check cannot follow"
 REFLECTION_PRECISION = {
     "MemberArrayMod": [("tier", "limited-access"), ("labels", [])],
     "MemberArrayGame": [("tier", "limited-access"), ("labels", ["Changes game saves"])],
     "MemberParameter": [("tier", "limited-access"), ("labels", [])],
     "TargetMethodsIterator": [("tier", "limited-access"), ("labels", ["Changes how the game works"])],
     "ExpressionCompiled": [("tier", "limited-access"), ("labels", [])],
-    "BoundedGameType": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
+    "BoundedGameType": [("tier", "limited-access"), ("labels", [BOUNDED])],
+    # Policy 38: any type of a game assembly stays a Broad-access reason; a type alone (no member looked up by
+    # name) reaches what any member of it and of the game types deriving from it can do.
+    "GameTypeByRuntimeName": [("tier", "broad-access"), ("groups", {DEEP: [GAME_WIDE]})],
+    "BoundedTypeCreates": [("tier", "broad-access"), ("groups", {SYSTEM: ["Starts other programs"]}), ("label", BOUNDED)],
+    "BoundedTypeCreatesPlain": [("tier", "limited-access"), ("labels", [BOUNDED])],
+    # Policy 40: a value read by reflection, kept in a local declared as object, is followed across a branch.
+    "ValueLocalAcrossBranch": [("tier", "limited-access"), ("labels", [BOUNDED, "Uses your clipboard"])],
     # G2a (policy 15): nested types found by GetMember(s), a lookup array written by the framework,
     # a member name given to a method of the mod's own generic type.
     "NestedByMember": [("tier", "broad-access"), ("group", (SYSTEM, "Starts other programs"))],
@@ -282,7 +330,7 @@ REFLECTION_PRECISION = {
     # H7: Traverse.Create(object) on an object of a declared class is that type or a derived one, as for GetType
     # (Broad access, system access before); a new object is exactly its type (Limited access, with the label every
     # use of Traverse has); one declared as object is untraced.
-    "TraverseObjectGame": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
+    "TraverseObjectGame": [("tier", "limited-access"), ("labels", ["Changes how the game works", BOUNDED])],
     "TraverseObjectNew": [("tier", "limited-access"), ("labels", ["Changes how the game works"])],
     "TraverseObjectUntyped": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     # H7 review (policy 24): an indexer renamed with [IndexerName] on a game type, found by AccessTools.Indexer or
@@ -314,7 +362,7 @@ REFLECTION_PRECISION = {
     "StaticAbstractExplicit": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "StaticAbstractImplicit": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "StaticAbstractBenign": [("tier", "limited-access"), ("labels", [])],
-    "GameDerivedGetType": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED], SYSTEM: ["Uses reflection the check cannot trace"]})],
+    "GameDerivedGetType": [("tier", "broad-access"), ("groups", {SYSTEM: ["Uses reflection the check cannot trace"]}), ("label", BOUNDED)],
     # H7b review (policy 26): a type nested in the mod's own type, or in a game type, found from the outer type
     # (which the walker counts as the outer type) is searched with what it inherits; a base type's renamed indexer
     # found by its parameters through a mod type that has its own. Each was Limited access before. Control: a
@@ -329,18 +377,18 @@ REFLECTION_PRECISION = {
     # misses keep "Uses reflection the check cannot trace": the value replaced on a path, a member declared as object,
     # the member looked up on a run-time type, names that differ only in case with different types, a hidden base
     # field, a cached FieldInfo that can also hold a member declared as object.
-    "ValueFieldGame": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
-    "ValuePropertyGame": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
-    "ValueFieldCached": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
+    "ValueFieldGame": [("tier", "limited-access"), ("labels", [BOUNDED])],
+    "ValuePropertyGame": [("tier", "limited-access"), ("labels", [BOUNDED])],
+    "ValueFieldCached": [("tier", "limited-access"), ("labels", [BOUNDED])],
     "ValueReplaced": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "ValueObjectField": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
-    "ValueDerivedLookup": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED], SYSTEM: ["Uses reflection the check cannot trace"]})],
+    "ValueDerivedLookup": [("tier", "broad-access"), ("groups", {SYSTEM: ["Uses reflection the check cannot trace"]}), ("label", BOUNDED)],
     "ValueCaseCollision": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "ValueHiddenField": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "ValueFieldReassigned": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     # A game type found by name is typed from the map when the game alone has that name (checked below with the
     # mod's own type of that name in another assembly). ShadowUniverse is that other assembly, a plain type alone.
-    "ValueByName": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
+    "ValueByName": [("tier", "limited-access"), ("labels", ["Changes how the game works", BOUNDED])],
     "ShadowUniverse": [("tier", "limited-access"), ("labels", [])],
     # D6 (policy 35): FieldType, PropertyType and ReturnType of such a member are exactly its declared type (Broad
     # access before, "Uses reflection the check cannot trace"). Near misses: declared as object; found on a run-time type.
@@ -348,14 +396,21 @@ REFLECTION_PRECISION = {
     "DeclaredPropertyTypeCached": [("tier", "limited-access"), ("labels", ["Uses your clipboard"])],
     "DeclaredReturnType": [("tier", "limited-access"), ("labels", [])],
     "DeclaredTypeObject": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    # D8 (policy 42): a parameter declared as object holds what every call passes, for a method nothing outside the mod can call.
+    "ObjectParameterTyped": [("tier", "limited-access"), ("labels", [BOUNDED, "Uses your clipboard"])],
+    "ObjectParameterChained": [("tier", "limited-access"), ("labels", [BOUNDED, "Uses your clipboard"])],
+    "ObjectParameterPublic": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ObjectParameterMixed": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ObjectParameterDelegate": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
+    "ObjectParameterReassigned": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "DeclaredTypeDerived": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     # D9 (policy 35): a lookup on the run-time type of a game-typed value reaches the members of the game's types
     # derived from it (by base type or interface, D3). DerivedGameMember had only the bounded reason before,
     # DerivedGameInterface no label; DerivedGameDirect is the control (same before and after). The mod's own derived
     # type is GameDerivedGetType above (policy 25).
-    "DerivedGameMember": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED], SYSTEM: ["Starts other programs"]})],
-    "DerivedGameInterface": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]}), ("labels", ["Changes game saves"])],
-    "DerivedGameDirect": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]}), ("labels", ["Uses your clipboard"])],
+    "DerivedGameMember": [("tier", "broad-access"), ("groups", {SYSTEM: ["Starts other programs"]}), ("label", BOUNDED)],
+    "DerivedGameInterface": [("tier", "limited-access"), ("labels", [BOUNDED, "Changes game saves"])],
+    "DerivedGameDirect": [("tier", "limited-access"), ("labels", [BOUNDED, "Uses your clipboard"])],
     # D10 (policy 35): values the rule cannot type stay untraced: a local declared as object whose address is passed
     # to a method (which can store any object there; before D10 the walker kept the last object it saw there), a call
     # of the mod's that returns object, a cast through a generic helper.
@@ -440,22 +495,35 @@ IL_PROBES = {
     # D review (policy 35), D5: a value read through a member is typed only by a member of the kind the read is made on
     # (ValueKindMismatch calls PropertyInfo.GetValue on a FieldInfo), and a property's type only when its getter
     # returns that type (PropertyGetterMismatch). The controls are typed: bounded to the probe's own class.
-    "ValueKindField": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
+    "ValueKindField": [("tier", "limited-access"), ("labels", [BOUNDED])],
     "ValueKindMismatch": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
-    "PropertyGetterMatch": [("tier", "broad-access"), ("groups", {DEEP: [BOUNDED]})],
+    "PropertyGetterMatch": [("tier", "limited-access"), ("labels", [BOUNDED])],
     "PropertyGetterMismatch": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
 }
 
 # Ordinary game interaction that policy 11 no longer counts as Broad access (fixtures/game-interaction/
 # cases/<case>.cs): benign controls, and the real APIs next to them that still are. Analyzed like the
 # Harmony patch fixtures. Same form as EVASION.
-REWRITES = "Rewrites the game's code with a Harmony transpiler, which the check cannot follow instruction by instruction"
+# Policy 38: a transpiler on the game's code is a label.
+REWRITES = "Rewrites parts of the game's code"
 REWRITES_OUTSIDE = "Rewrites code other than the game's with a Harmony transpiler"
 XML_TYPES = "Reads or writes XML into objects whose types the check does not follow"
 XML_OPEN = "Reads or writes XML into objects of a type chosen at run time, which the check does not follow"
 XML_GAME = "Has the game read or write XML into objects of types the mod chooses, which the check does not follow"
 GAME_INTERACTION = {
-    "TranspilerOperand": [("tier", "broad-access"), ("groups", {DEEP: [REWRITES]}), ("labels", ["Changes how the game works"])],
+    "TranspilerOperand": [("tier", "limited-access"), ("labels", ["Changes how the game works", REWRITES])],
+    # Policy 38: an instruction a transpiler can emit that reads or writes through an address is raw memory.
+    # Policy 39: pointers the game returned, passed on and read through, are not raw memory; anything else done
+    # with a pointer is.
+    "GamePointerPassedOn": [("tier", "limited-access"), ("labels", [])],
+    "GamePointerWritten": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "GamePointerMadeUp": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "GamePointerMoved": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "GamePointerOwnMadeUp": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "GamePointerOtherType": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "GamePointerMixedLocal": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "GamePointerUntyped": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]})],
+    "TranspilerMemoryOpcode": [("tier", "broad-access"), ("groups", {DEEP: ["Reads or writes memory directly"]}), ("label", REWRITES)],
     "DynamicMethodEmit": [("tier", "broad-access"), ("reason", "Builds code at run time")],
     "TranspileFramework": [("tier", "broad-access"), ("group", (SYSTEM, "Rewrites code other than the game's with a Harmony transpiler"))],
     "ObservingPostfix": [("tier", "limited-access"), ("labels", ["Changes how the game works"])],
@@ -482,8 +550,8 @@ GAME_INTERACTION = {
     "XmlUntraced": [("tier", "limited-access"), ("label", "Connects to the internet")],
     # G2a (policy 15): a transpiler that uses no CodeInstruction member; operands that skip the check at
     # the call (a setter delegate, Activator, a join with a string); the game's XML helper for a mod type.
-    "LinqTranspiler": [("tier", "broad-access"), ("group", (DEEP, REWRITES)), ("group", (SYSTEM, "Starts other programs"))],
-    "RewriteNestedExempt": [("tier", "broad-access"), ("group", (DEEP, REWRITES)), ("group", (SYSTEM, "Starts other programs"))],
+    "LinqTranspiler": [("tier", "broad-access"), ("label", REWRITES), ("group", (SYSTEM, "Starts other programs"))],
+    "RewriteNestedExempt": [("tier", "broad-access"), ("label", REWRITES), ("group", (SYSTEM, "Starts other programs"))],
     "OperandSetterDelegate": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "OperandActivator": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "OperandJoin": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
@@ -502,11 +570,11 @@ GAME_INTERACTION = {
     # a framework method are outside.
     # Operands written through CodeMatcher.Operand (and a control), a CodeInstruction subclass, a game
     # method taken as a delegate, AccessTools.MakeDeepCopy.
-    "TranspilePatchCall": [("tier", "broad-access"), ("groups", {DEEP: [REWRITES]}), ("labels", ["Changes how the game works"])],
-    "TranspileTargetMethod": [("tier", "broad-access"), ("groups", {DEEP: [REWRITES]}), ("labels", ["Changes how the game works"])],
+    "TranspilePatchCall": [("tier", "limited-access"), ("labels", ["Changes how the game works", REWRITES])],
+    "TranspileTargetMethod": [("tier", "limited-access"), ("labels", ["Changes how the game works", REWRITES])],
     "TranspileProcessor": [("tier", "broad-access"), ("group", (SYSTEM, REWRITES_OUTSIDE))],
-    "TranspileReversePatch": [("tier", "broad-access"), ("groups", {DEEP: [REWRITES]}), ("label", "Changes game saves")],
-    "TranspileReverseStandin": [("tier", "broad-access"), ("groups", {DEEP: [REWRITES]}), ("label", "Changes game saves")],
+    "TranspileReversePatch": [("tier", "limited-access"), ("labels", ["Changes how the game works", REWRITES, "Changes game saves"])],
+    "TranspileReverseStandin": [("tier", "limited-access"), ("labels", ["Changes how the game works", REWRITES, "Changes game saves"])],
     "TranspileOwnMethod": [("tier", "broad-access"), ("group", (SYSTEM, REWRITES_OUTSIDE))],
     # The same routes on string.Concat: without them a route that placed nothing would pass the game cases.
     "TranspilePatchCallFramework": [("tier", "broad-access"), ("group", (SYSTEM, REWRITES_OUTSIDE))],
@@ -515,7 +583,7 @@ GAME_INTERACTION = {
     "TranspileReverseStandinFramework": [("tier", "broad-access"), ("group", (SYSTEM, REWRITES_OUTSIDE))],
     "OperandByRef": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "OperandRefLocal": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
-    "OperandByRefTraced": [("tier", "broad-access"), ("groups", {DEEP: [REWRITES]}), ("labels", ["Changes how the game works"])],
+    "OperandByRefTraced": [("tier", "limited-access"), ("labels", ["Changes how the game works", REWRITES])],
     "InstructionSubclass": [("tier", "broad-access"), ("group", (SYSTEM, "Uses reflection the check cannot trace"))],
     "GameDelegate": [("tier", "broad-access"), ("group", (SYSTEM, "Starts other programs"))],
     "DeepCopyGameType": [("tier", "limited-access"), ("label", "Changes game saves")],
@@ -656,12 +724,13 @@ def present(files):
     return list(files)
 
 
-def analyze(*files, allowlist=None, manifest=None, profile=None, libraries=None, policy=None, json_out=None):
+def analyze(*files, allowlist=None, manifest=None, profile=None, libraries=None, policy=None, json_out=None, others=()):
     out = json_out or scratch(".result.json")
     cmd = ["dotnet", tool, "analyze", "--json", out]
     if allowlist: cmd += ["--allowlist", allowlist]
     if manifest: cmd += ["--manifest", manifest]
     if profile: cmd += ["--game-profile", profile]
+    for other in others: cmd += ["--other-game-profile", other]  # "NAME=FILE": the profile of another game build
     if libraries: cmd += ["--library-profile", libraries]
     if policy: cmd += ["--policy", policy]
     if manifest: present([manifest])
@@ -671,9 +740,9 @@ def analyze(*files, allowlist=None, manifest=None, profile=None, libraries=None,
     return result["mods"] if manifest else result["mods"]["mod"]
 
 
-def facts(*files, out=None):
+def facts(*files, out=None, result=None):
     out = out or scratch(".facts.json")
-    run(["dotnet", tool, "analyze", "--json", scratch(".result.json"), "--facts", out] + present(files))
+    run(["dotnet", tool, "analyze", "--json", result or scratch(".result.json"), "--facts", out] + present(files))
     with open(out) as f:
         return json.load(f)["files"]
 
@@ -866,6 +935,13 @@ def g_game_api():
           mt.get("KSA.Universe", {}).get("field:Current") == "KSA.Craft|KSA" and mt["KSA.Universe"].get("property:Focus") == "KSA.Craft|KSA"
           and mt["KSA.Universe"].get("method:Find") == "KSA.Craft|KSA" and mt["KSA.Universe"].get("field:Anything") == "?"
           and mt.get("KSA.Craft", {}).get("method:Update") == "?" and "KSA.IPayload" in mt, {k: mt.get(k) for k in ("KSA.Universe", "KSA.Craft")})
+    # R10 (policy 43, format 8): the map types the parameters of game methods, by name and by index; one whose type
+    # is not a class or struct, or on which overloads disagree, is left out (not known).
+    dock = mt.get("KSA.Dock", {})
+    check("game-api: profile records the declared types of game methods' parameters, and leaves out the ones not known",
+          dock.get("param:Attach:craft") == "KSA.Craft|KSA" and dock.get("param:Attach:#1") == "KSA.Terminal|KSA" and dock.get("method:Attach") == "KSA.Craft|KSA"
+          and dock.get("param:Attach:@craft") == "#0" and dock.get("param:Attach:@console") == "#1"
+          and not any(k in dock for k in ("param:Attach:slot", "param:Attach:#2", "param:Attach:@slot", "param:Swap:item", "param:Swap:#0", "param:Swap:@item")), dock)
     check("game-api: profile records the interfaces of game types",
           game.get("interfaces", {}).get("KSA.Satellite") == ["KSA.IPayload"], game.get("interfaces"))
     r = analyze(game_mod, profile=profile)
@@ -973,6 +1049,42 @@ def g_game_api():
           and any(e.startswith("KSA.ListDerived::NoSuchName in KSA, which this game build does not define") for e in ev)
           and not any("TrimExcess" in e for e in ev), r)
 
+    # Several game builds (policy 37): a direct reference to a game member the build checked against lacks is
+    # looked up in the other builds given. The game stand-in is the older build here; the copy with
+    # Vanishing.RemovedInThisBuild renamed is the current one.
+    r = analyze(gaps_mod, profile=gaps_profile, others=["older=" + profile])
+    ev = evidence(r)
+    check("game-api: a game member the current build lacks is looked up in another build, which the result names in a warning",
+          not any("RemovedInThisBuild" in e for e in ev) and any(e.startswith("KSA.Unreadable::Caller (game API)") for e in ev)
+          and r["warnings"] == ["calls 1 game member the current game build does not define, checked against game build older"], (r["warnings"], ev))
+    # Copies of the profile without GameSaves.MakeSave and Links.Open: a current build that lacks both.
+    with open(profile) as f:
+        lacking = json.load(f)
+    for t, m in [("KSA.GameSaves", "MakeSave"), ("KSA.Links", "Open")]:
+        lacking["members"][t].remove(m)
+        del lacking["methods"][f"{t}::{m}"]
+    lacking_profile = write_json(j("game-profile-lacking.json"), lacking)
+    r = analyze(game_mod, profile=lacking_profile)
+    check("game-api: without another build, a member the current build lacks is not analyzed",
+          r["tier"] == "broad-access" and groups(r) == {UNCHECKED: [UNANALYZED]} and not r["warnings"]
+          and any(e.startswith("KSA.GameSaves::MakeSave in KSA, which this game build does not define") for e in evidence(r)), r)
+    r = analyze(game_mod, profile=lacking_profile, others=["older=" + profile])
+    check("game-api: a member found in another build carries that build's label",
+          r["tier"] == "limited-access" and labels(r) == [SAVES]
+          and any(e.startswith("KSA.GameSaves::MakeSave (game API of game build older, not in the current build)") for e in evidence(r)), r)
+    r = analyze(fx("game-api/mod-full", "GameApiModFull.dll"), profile=lacking_profile, others=["older=" + profile])
+    check("game-api: a member found in another build carries that build's Broad-access capability",
+          r["tier"] == "broad-access" and "Starts other programs" in reasons(r) and UNANALYZED not in reasons(r)
+          and any(e.startswith("KSA.Links::Open (game API of game build older, not in the current build)") for e in evidence(r)), r)
+    r = analyze(game_mod, profile=j("game-profile-other.json"), others=["older=" + profile])
+    check("game-api: an assembly named like the game's that only another build has is looked up there",
+          groups(r) == {DEEP: [RAW_MEMORY]} and labels(r) == [SAVES] and len(r["warnings"]) == 1, r)
+    r = analyze(inherited_mod, profile=profile, others=["other=" + gaps_profile])
+    check("game-api: a member no given build defines stays not analyzed",
+          any(e.startswith("KSA.ListDerived::NoSuchName in KSA, which this game build does not define") for e in evidence(r)) and not r["warnings"], r)
+    p = run(["dotnet", tool, "analyze", "--other-game-profile", profile, game_mod], expect=None)
+    check("game-api: --other-game-profile without --game-profile is refused", p.returncode == 2 and "needs --game-profile" in p.stderr, p.stderr)
+
 
 
 def g_classification():
@@ -1004,14 +1116,18 @@ def g_file_access():
     check("file-access: a network connection and a write into the mod's own folder are Broad access",
           r["tier"] == "broad-access" and groups(r) == {SYSTEM: ["Connects to the internet and changes files where the game loads code from"]}
           and INTERNET in labels(r) and CODE_FILES in labels(r), r)
+    # Policy 41: making a folder and deleting a file put no content where the loader looks.
+    r = analyze(fx("download-folder", "DownloadFolderFixture.dll"))
+    check("file-access: a network connection with only a folder made and a file deleted in the mod's own folder is Limited access, with both labels",
+          r["tier"] == "limited-access" and labels(r) == [INTERNET, CODE_FILES], r)
     p = run(["dotnet", tool, "policy"])
     combo = j("policy-combo.jsonc")
     with open(combo, "w") as f:
-        f.write(p.stdout.replace('"caps": ["network", "file-write-code"]', '"caps": ["network", "native-code"]', 1))
+        f.write(p.stdout.replace('"caps": ["network", "file-content-code"]', '"caps": ["network", "native-code"]', 1))
     p = run(["dotnet", tool, "analyze", "--policy", combo, corrupt], expect=None)
     check("policy: a combination of a Broad-access capability is rejected", p.returncode != 0 and "Broad access on its own" in p.stderr, p.stderr)
     with open(combo, "w") as f:
-        f.write(builtin.replace('"caps": ["network", "file-write-code"]', '"caps": ["network", "raw-memory"]', 1))
+        f.write(builtin.replace('"caps": ["network", "file-content-code"]', '"caps": ["network", "raw-memory"]', 1))
     p = run(["dotnet", tool, "analyze", "--policy", combo, corrupt], expect=None)
     check("policy: a combination of a deep-game-access capability is rejected",
           p.returncode != 0 and "Broad access on its own (Deep game access)" in p.stderr, p.stderr)
@@ -1137,11 +1253,11 @@ def g_reflection_precision():
         r = analyze(case_dll("reflection-precision", case), allowlist=allow_harmony, libraries=harmony_profile, profile=profile)
         check(f"reflection-precision: {case}", expect(r, expected),
               {"tier": r["tier"], "labels": labels(r), "broadAccess": groups(r)})
-    # The bounded reason is deep game access only: the same mod has no other group, and no unresolved reflection.
+    # Bounded reflection is a label (policy 38): the same mod has no Broad-access reason.
     r = analyze(case_dll("reflection-precision", "BoundedGameType"),
                 allowlist=allow_harmony, libraries=harmony_profile, profile=profile)
-    check("reflection-precision: bounded reflection is in the deep-game-access group only",
-          groups(r) == {DEEP: [BOUNDED]} and UNTRACED not in reasons(r), r)
+    check("reflection-precision: bounded reflection is a label, with no Broad-access reason",
+          r["tier"] == "limited-access" and labels(r) == [BOUNDED] and not groups(r), r)
     # G5b: the other mod's assembly is named in the evidence; without the game profile's type list, a game type
     # found by name alone is code that was not analyzed (it fails closed).
     r = analyze(case_dll("reflection-precision", "OtherModType"), allowlist=allow_harmony, libraries=harmony_profile, profile=profile)
@@ -1169,6 +1285,17 @@ def g_reflection_precision():
         r = analyze(os.path.join(probes, case + ".dll"))
         check(f"reflection-precision: IL probe {case}", expect(r, expected),
               {"tier": r["tier"], "labels": labels(r), "broadAccess": groups(r)})
+    # R8: `analyze --facts` says what produced each untraced value at a sink (here a local that holds the value
+    # read from a game field on one path and an argument on the other), and asking for it changes no result.
+    replaced = case_dll("reflection-precision", "ValueReplaced")
+    with_facts = j("why-result.json")
+    notes = facts(replaced, result=with_facts)[0]["untraced"]
+    check("reflection-precision: the facts say what produced an untraced value",
+          any(n.startswith("System.Reflection.MethodBase::Invoke  <-  ValueReplaced::Go  [") and "local 0 after a branch" in n
+              and "System.Reflection.FieldInfo::GetValue on a member of KSA.Universe" in n and "argument 0 of ValueReplaced::Go" in n for n in notes), notes)
+    with open(with_facts) as f:
+        explained = json.load(f)["mods"]["mod"]
+    check("reflection-precision: asking for the facts changes no result", explained == analyze(replaced), explained)
     # H3: a trusted-library member found ignoring case is named as the member it is.
     r = analyze(case_dll("reflection-precision", "TrustedIgnoreCase"), allowlist=allow_harmony, libraries=harmony_profile, profile=profile)
     check("reflection-precision: a library member found ignoring case is the member found",
@@ -1754,7 +1881,7 @@ def g_scan():
     # A cached game profile cut short is deleted and made again, with a warning (and the library
     # profiles made with it too), and the scan succeeds.
     with open(current, "w") as f:
-        f.write('{"format": 7, "stamp": {"policy"')
+        f.write('{"format": 8, "stamp": {"policy"')
     doc, p, _ = scan("index", snapshot_file=snap8)
     by = {r["id"]: r for r in doc["releases"]}
     with open(current) as f:
@@ -1781,8 +1908,8 @@ def g_scan():
     check("scan: a result marked for retry is scanned again, the others are reused",
           by["Content"]["status"] == "scanned" and "retry" not in by["Content"] and doc["summary"]["scanned"] == 1, doc["summary"])
     check("scan: a cached library profile of another format is made again with a warning, the game profile is reused",
-          "warning: the cached library profile" in p.stderr and "format 5, not 7" in p.stderr
-          and "game profile" not in p.stderr and json.load(open(library_profile))["format"] == 7, p.stderr[-1500:])
+          "warning: the cached library profile" in p.stderr and "format 5, not 8" in p.stderr
+          and "game profile" not in p.stderr and json.load(open(library_profile))["format"] == 8, p.stderr[-1500:])
 
     # Stored results that cannot be used as they are: a duplicate key (which a JSON reader accepts
     # and then fails on), no tier, no result at all. Each is scanned again, none ends the run.
@@ -1979,6 +2106,129 @@ def g_scan():
     check("build-allowlist: trusts every file of the snapshot's mod loaders by hash",
           list(a["libraries"]) == [sha256(harmony_dll)] and a["libraries"][sha256(harmony_dll)]["anchor"] == "Loader", a)
 
+    # A folder of game builds (--games, policy 37), in a state folder of its own. build-10 is the game
+    # stand-in with Vanishing.RemovedInThisBuild renamed; build-9 is the stand-in as built, which defines it.
+    # A folder without DLLs in it is no build.
+    games = os.path.join(T, "games")
+    for name in ("build-9", "build-10", "notes"):
+        os.makedirs(os.path.join(games, name))
+    stub = fx("game-api/stub", "KSA.dll")
+    shutil.copy(stub, os.path.join(games, "build-9"))
+    with open(stub, "rb") as f:
+        pe = f.read()
+    assert pe.count(b"RemovedInThisBuild") == 1
+    with open(os.path.join(games, "build-10", "KSA.dll"), "wb") as f:
+        f.write(pe.replace(b"RemovedInThisBuild", b"RemovedInThisBuilt"))
+    state2 = os.path.join(T, "state-games")
+    os.makedirs(os.path.join(state2, "archives"))
+    shutil.copy(loader, os.path.join(state2, "archives", sha256(loader) + ".zip"))
+    snap_loader = write_json(os.path.join(T, "snapshot-loader.json"), dict(snapshot, listings=[lst["Loader"]]))
+    gaps_mod = fx("game-api/mod-gaps", "GameApiModGaps.dll")
+
+    def scan_games(*game_args, expect=0):
+        out = scratch(".run.json")
+        p = run(["dotnet", pipeline, "scan", "mod", gaps_mod, *game_args, "--analyzer", tool, "--state", state2, "--snapshot", snap_loader,
+                 "--retries", "0", "--format", "json", "--out", out], expect=expect)
+        with open(out) as f:
+            text = f.read()
+        return (json.loads(text) if text else None), p
+
+    doc, p = scan_games("--games", games)
+    g, r = doc["stamp"]["game"], doc["releases"][0]["result"]
+    check("scan: --games checks against the newest build by the numbers in the folder names, and looks missing game members up in the others",
+          g["folder"] == "build-10" and [o["folder"] for o in g["others"]] == ["build-9"] and r["tier"] == "limited-access"
+          and r["warnings"] == ["calls 1 game member the current game build does not define, checked against game build build-9"], (g, r))
+    key_both = doc["stamp"]["key"]
+    doc, p = scan_games("--game", os.path.join(games, "build-10"))
+    g, r = doc["stamp"]["game"], doc["releases"][0]["result"]
+    check("scan: with --game alone, a game member that build lacks is not analyzed, under another scan key",
+          g["folder"] == "build-10" and "others" not in g and r["tier"] == "broad-access" and doc["stamp"]["key"] != key_both
+          and any("RemovedInThisBuild in KSA, which this game build does not define" in e for e in evidence(r)), (g, r))
+    doc, p = scan_games("--games", games, "--game", os.path.join(games, "build-9"))
+    g, r = doc["stamp"]["game"], doc["releases"][0]["result"]
+    check("scan: --game with --games names the build to check against; the rest are the other builds",
+          g["folder"] == "build-9" and [o["folder"] for o in g["others"]] == ["build-10"] and r["tier"] == "limited-access" and not r["warnings"], (g, r))
+    doc, p = scan_games(expect=2)
+    check("scan: neither --game nor --games is a usage error", doc is None and "--game DIR" in p.stderr and "--games DIR" in p.stderr, p.stderr)
+    doc, p = scan_games("--games", os.path.join(games, "notes"), expect=2)
+    check("scan: a --games folder with no build in it is a usage error", doc is None and "no game build" in p.stderr, p.stderr)
+
+    # Required dependencies (a note since pipeline 0.3.11; they raised the tier in 0.3.9 and 0.3.10), in a state folder of its own: installing a mod installs what it
+    # requires, so each requirement is noted with the tier of its own result. The mod's tier is its own code's.
+    state3 = os.path.join(T, "state-deps")
+    os.makedirs(os.path.join(state3, "archives"))
+    for a in (loader, sample, patch, content):
+        shutil.copy(a, os.path.join(state3, "archives", sha256(a) + ".zip"))
+
+    def needs(rel, *deps):
+        return dict(rel, dependencies=[{"id": i, "kind": k} for i, k in deps])
+
+    deps_snapshot = dict(snapshot, listings=[
+        listing("Loader", "Loader", [release("Loader", "1.0.0", loader, seed=False)], kind="mod-loader"),
+        listing("Sample", "Sample", [release("Sample", "1.0.0", sample, seed=False)]),                                      # Broad access
+        listing("Needs", "Needs", [needs(release("Needs", "1.0.0", patch, seed=False), ("Sample", "required"))]),           # its own code: Limited access
+        listing("Chain", "Chain", [needs(release("Chain", "1.0.0", content, seed=False), ("Needs", "required"))]),          # its own: No code
+        listing("Likes", "Likes", [needs(release("Likes", "1.0.0", patch, seed=False), ("Sample", "recommends"))]),
+        listing("Orphan", "Orphan", [needs(release("Orphan", "1.0.0", patch, seed=False), ("Nowhere", "required"))])])
+    snap_deps = write_json(os.path.join(T, "snapshot-deps.json"), deps_snapshot)
+
+    def scan_deps(snapshot_file, *args):
+        out = scratch(".run.json")
+        p = run(["dotnet", pipeline, "scan", *(args or ("index",)), "--analyzer", tool, "--game", game, "--state", state3, "--snapshot", snapshot_file,
+                 "--retries", "0", "--format", "json", "--out", out])
+        with open(out) as f:
+            return json.load(f), p
+
+    doc, p = scan_deps(snap_deps)
+    by = {r["id"]: r for r in doc["releases"]}
+    r = by["Needs"]["result"]
+    dep = (r.get("dependencies") or [{}])[0]
+    check("scan: a required dependency is noted with its own tier, and does not change the mod's tier, labels or reasons",
+          r["tier"] == "limited-access" and "own" not in r and labels(r) == ["Changes how the game works"] and not r["broadAccess"]
+          and dep.get("id") == "Sample" and dep.get("version") == "1.0.0" and dep.get("tier") == "broad-access" and dep.get("tierName") == "Broad access"
+          and dep.get("status") == "scanned" and "labels" not in dep and "broadAccess" not in dep, r)
+    r = by["Chain"]["result"]
+    check("scan: a dependency's own dependencies are noted too, and say which mod they come through",
+          r["tier"] == "no-code" and [(d["id"], d.get("through"), d.get("tier")) for d in r["dependencies"]] == [("Needs", None, "limited-access"), ("Sample", "Needs", "broad-access")], r)
+    check("scan: a recommended mod is not a requirement", by["Likes"]["result"]["tier"] == "limited-access" and "dependencies" not in by["Likes"]["result"], by["Likes"]["result"])
+    r = by["Orphan"]["result"]
+    check("scan: a required mod with no result is noted as not scanned, and the mod keeps its tier",
+          r["tier"] == "limited-access" and r["dependencies"][0]["status"] == "not scanned" and "tier" not in r["dependencies"][0], r)
+    check("scan: the run counts each mod in the tier of its own code",
+          doc["summary"]["tiers"] == {"broad-access": 1, "limited-access": 4, "no-code": 1}, doc["summary"])
+    text = run(["dotnet", pipeline, "scan", "index", "--analyzer", tool, "--game", game, "--state", state3, "--snapshot", snap_deps, "--retries", "0", "--all"]).stdout
+    check("scan: the text output notes each requirement with its tier under the mod, and the count of reasons beside a Broad access tier",
+          "### Needs 1.0.0: Limited access" in text and "  Requires Sample 1.0.0: Broad access" in text and "  Requires Sample 1.0.0 (through Needs): Broad access" in text
+          and "  Requires Nowhere: Not scanned" in text and re.search(r"### Sample 1\.0\.0: Broad access \(\d+ reasons?\)", text) is not None, text[:3000])
+    doc2, p = scan_deps(snap_deps)
+    check("scan: a second run reuses every result, dependencies included",
+          all(x["status"] == "cached" for x in doc2["releases"]) and {x["id"]: x["result"] for x in doc2["releases"]} == {x["id"]: x["result"] for x in doc["releases"]},
+          [(x["id"], x["status"]) for x in doc2["releases"]])
+    # The dependency gets a new release with no code: the note of the mods that require it follows, and their own result does not change.
+    deps_snapshot["listings"][1] = listing("Sample", "Sample", [release("Sample", "1.0.0", sample, seed=False), release("Sample", "2.0.0", content, seed=False)])
+    doc3, p = scan_deps(write_json(os.path.join(T, "snapshot-deps2.json"), deps_snapshot))
+    by = {r["id"]: r for r in doc3["releases"]}
+    check("scan: when a dependency changes, the note of the mods that require it follows, and they are not reported as changed",
+          by["Needs"]["status"] == "cached" and by["Needs"]["result"]["tier"] == "limited-access" and by["Needs"]["result"]["dependencies"][0]["version"] == "2.0.0"
+          and by["Needs"]["result"]["dependencies"][0]["tier"] == "no-code" and "change" not in by["Needs"] and by["Chain"]["result"]["tier"] == "no-code", (by["Needs"], by["Chain"].get("result")))
+    doc4, p = scan_deps(os.path.join(T, "snapshot-deps2.json"), "mod", "Needs")
+    check("scan mod: a dependency that is not scanned in the run answers from its last stored result",
+          doc4["releases"][0]["result"]["tier"] == "limited-access" and doc4["releases"][0]["result"]["dependencies"][0]["version"] == "2.0.0", doc4["releases"][0])
+    html = os.path.join(T, "report-deps.html")
+    run(["dotnet", pipeline, "report", sorted(glob.glob(os.path.join(state3, "runs", "*-index.json")))[0], "--out", html])
+    with open(html) as f:
+        page = f.read()
+    check("report: the index has a column with the count of reasons, and a mod's row and card note what it requires with that mod's tier",
+          "<th>Reasons</th>" in page and "requires Sample 1.0.0 (Broad access)" in page and "Installed with it: Sample 1.0.0 (Broad access)" in page
+          and "Installed with it: Needs 1.0.0 (Limited access), Sample 1.0.0 (Broad access, required by Needs)" in page, page[:2000])
+    # O2: a listing of type mod-loader is listed apart from the mods and left out of their counts; its card stays.
+    loaders_at, mods_at = page.find("<h2>Mod loaders</h2>"), page.find("<h2>Mods</h2>")
+    mods_table = page[mods_at:page.find("</table>", mods_at)]
+    check("report: a mod loader is listed apart from the mods, left out of their counts, and keeps its card",
+          0 < loaders_at < mods_at and ">Loader</a>" in page[loaders_at:mods_at] and ">Loader</a>" not in mods_table and ">Sample</a>" in mods_table
+          and "5 mods with a result, and 1 mod loader listed apart" in page and re.search(r'<article class="card [^"]*" id="m\d+">\s*<div class="head"><h3>Loader</h3>', page) is not None
+          and not report_problems(page)[0], (page[loaders_at:loaders_at + 600], report_problems(page)[0]))
+
 
 
 # Multi-case fixture projects: fixtures/<project>/<csproj>, one assembly per case, selected with an
@@ -2003,7 +2253,7 @@ GROUPS = [
     ("library", g_library, ["library-propagation/mod", "library-propagation/mod-full", "library-propagation/mod-exempt"], []),
     ("game-api", g_game_api, ["game-api/stub", "game-api/mod", "game-api/mod-full", "game-api/mod-exempt", "game-api/mod-gaps"], []),
     ("classification", g_classification, ["classification/safe", "classification/unclassified"], []),
-    ("file-access", g_file_access, ["labels", "file-access", "download", "fail-open/corrupt"], []),
+    ("file-access", g_file_access, ["labels", "file-access", "download", "download-folder", "fail-open/corrupt"], []),
     ("shell-open", g_shell_open, ["shell-open/link", "shell-open/program"], []),
     ("raw-memory", g_raw_memory, ["raw-memory/safe", "raw-memory/unsafe", "reflection"], []),
     ("fail-open", g_fail_open, ["fail-open", "fail-open/corrupt"], []),
@@ -2013,7 +2263,7 @@ GROUPS = [
     ("game-interaction", g_game_interaction, STUBS, ["game-interaction"]),
     ("evasion", g_evasion, ["harmony-patch/stub"], ["evasion"]),
     ("pipeline", g_pipeline, ["reflection", "classification/unclassified"], []),
-    ("scan", g_scan, ["reflection", "classification/unclassified", "harmony-patch/stub", "game-api/stub", "impersonation", "report-markup"], ["harmony-patch/mod"]),
+    ("scan", g_scan, ["reflection", "classification/unclassified", "harmony-patch/stub", "game-api/stub", "game-api/mod-gaps", "impersonation", "report-markup"], ["harmony-patch/mod"]),
 ]
 
 

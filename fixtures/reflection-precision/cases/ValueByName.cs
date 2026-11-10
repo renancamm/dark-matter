@@ -4,6 +4,7 @@
 // Expected: Broad access, deep game access only (before: "Uses reflection the check cannot trace"). With the mod's
 // other assembly defining a type of that name too (ShadowUniverse, checked by the harness), the lookup can find
 // that one: "Uses reflection the check cannot trace".
+// Policy 38: reflection bounded to a game type is the label "Uses the game's internals by reflection", not a Broad-access reason.
 using HarmonyLib;
 
 public static class ValueByName {

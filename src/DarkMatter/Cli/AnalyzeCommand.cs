@@ -6,7 +6,7 @@ namespace DarkMatter.Cli;
 
 /// <summary><c>darkmatter analyze</c>: analyze mod files and report each mod's tier and labels.</summary>
 internal static class AnalyzeCommand {
-    static readonly string[] Valued = ["--allowlist", "--manifest", "--name", "--game-profile", "--library-profile", "--policy", "--json", "--facts"];
+    static readonly string[] Valued = ["--allowlist", "--manifest", "--name", "--game-profile", "--other-game-profile", "--library-profile", "--policy", "--json", "--facts"];
     static readonly string[] Flags = ["-v", "--verbose"];
 
     public static int Run(IReadOnlyList<string> argv) {
@@ -27,7 +27,21 @@ internal static class AnalyzeCommand {
         var gameApi = game?.Methods ?? new Dictionary<string, string[]>();
         var framework = Boundary.SharedFramework();
         var gameAssemblies = game?.Assemblies?.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var analyzer = new Analyzer(policy, allow ?? Allowlist.Empty, gameApi, framework, gameAssemblies, game?.InlineArrays, game?.GameTypes);
+        // Other builds of the game ("NAME=FILE", or FILE named by its file name): a game member the
+        // profile's build lacks is looked up there (see Evaluator.GameReference).
+        var others = new List<OtherGame>();
+        foreach (var given in o.GetAll("--other-game-profile")) {
+            if (game == null) throw new UsageException("--other-game-profile needs --game-profile: it only answers for members that build lacks");
+            int eq = given.IndexOf('=');
+            var (name, file) = eq > 0 ? (given[..eq], given[(eq + 1)..]) : (Path.GetFileNameWithoutExtension(given), given);
+            var other = Inputs.LoadGameProfile(file, policy);
+            if (other.Assemblies == null) throw new InvalidDataException($"game profile {file} has no assembly list; it cannot answer for another game build");
+            others.Add(new OtherGame(name, new Boundary((allow ?? Allowlist.Empty).Names, other.Assemblies.ToHashSet(StringComparer.OrdinalIgnoreCase),
+                policy.GameAssemblies, framework, other.Members, other.Bases, other.Interfaces), other.Methods));
+        }
+        var analyzer = new Analyzer(policy, allow ?? Allowlist.Empty, gameApi, framework, gameAssemblies, game?.InlineArrays, game?.GameTypes,
+            // With --facts the walker also notes what produced each value it does not follow (the "untraced" list).
+            explain: o.Get("--facts") != null);
         var boundary = new Boundary(
             (allow ?? Allowlist.Empty).Names,
             gameAssemblies,
@@ -66,7 +80,7 @@ internal static class AnalyzeCommand {
         foreach (var listing in listings) {
             var mod = new ModInput(listing.Name, [.. listing.Files.Select(f => new ModFile(listing.Shown(f.Path), FactsFor(f.Path, f.Sha256)))],
                 listing.Unextracted, [.. listing.Scripts.Select(listing.Shown)]);
-            results[listing.Name] = Evaluator.Evaluate(mod, policy, boundary, libraries, gameApi, game?.Types);
+            results[listing.Name] = Evaluator.Evaluate(mod, policy, boundary, libraries, gameApi, game?.Types, others, game?.GameTypes);
         }
 
         TextReport.Print(Console.Out, results, o.Has(Flags));
@@ -91,6 +105,8 @@ internal static class AnalyzeCommand {
             f.Error,
             caps,
             unresolvedReflection = f.Methods.SelectMany(m => m.UnresolvedReflection).ToList(),
+            // For each untraced value at a reflection sink or given to a Type or member node: what it is and what produced it.
+            untraced = f.Methods.SelectMany(m => m.Untraced).Select(u => $"{u.What}  [{u.Why}]").Distinct().ToList(),
             // Reflection known only up to a type's derived types or an assembly, decided per mod by where that is.
             boundedReflection = f.Methods.SelectMany(m => m.BoundedReflection).Select(b => $"{b.Detail}  ({(b.Type == "*" ? "any type" : b.Type)} in {b.Assembly ?? "?"})").ToList(),
             // Reflection on values read from Type and member fields, resolved per mod from the fields' writers.
@@ -99,6 +115,10 @@ internal static class AnalyzeCommand {
             reflectionStores = f.Methods.SelectMany(m => m.ReflectionStores.SelectMany(kv => kv.Value.Select(h => $"{kv.Key}  <-  {m.Name}  [{(h.Member ? "member of " : "")}{h.Type}{(h.Assembly != null ? " in " + h.Assembly : "")}]"))
                 .Concat(m.FieldCopies.SelectMany(kv => kv.Value.Select(g => $"{kv.Key}  <-  {m.Name}  [copy of {g}]")))
                 .Concat(m.UntrackedStores.Select(k => $"{k}  <-  {m.Name}  [untraced]"))).Distinct().ToList(),
+            // Harmony patches applied by hand whose HarmonyMethod went only to Harmony.Patch (R3): the patch method and what the original was traced to.
+            // What Harmony passes a method's object parameters when it is handed over as a patch (R10): "Type::Method#N = how".
+            patchParameters = f.Methods.SelectMany(m => m.PatchParameters.OrderBy(kv => kv.Key).Select(kv => $"{m.Name}#{kv.Key} = {PatchParameter.Describe(kv.Value)} of the original")).ToList(),
+            manualPatches = f.Methods.SelectMany(m => m.ManualPatches).Select(p => $"{p.Detail}  [original: {(p.Originals != null ? string.Join(", ", p.Originals.Select(h => $"{h.Type}{(h.Value?.Sole is { } sole ? "::" + sole : " (not known to be declared by that type alone)")}")) : p.OriginalNode ?? "untraced")}]").Distinct().ToList(),
             // Types whose fields are written through reflection ("*": unknown, "T+": T or a type derived from it).
             reflectionFieldWrites = f.Methods.SelectMany(m => m.ReflectionFieldWrites.Select(w => $"{w}  <-  {m.Name}")).Distinct().ToList(),
             // Types reached by reflection, resolved per mod by where they live.
